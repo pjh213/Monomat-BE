@@ -73,6 +73,12 @@ public final class RedisKeys {
     /** 공개 맵 단건 캐시 키 접두사 */
     private static final String MAP_PUBLIC_DETAIL_PREFIX = "map:public:";
 
+    /** YouTube oEmbed 성공 캐시 키 접두사 */
+    private static final String YOUTUBE_OEMBED_SUCCESS_PREFIX = "youtube:oembed:success:";
+
+    /** YouTube oEmbed 실패 캐시 키 접두사 */
+    private static final String YOUTUBE_OEMBED_FAILURE_PREFIX = "youtube:oembed:failure:";
+
     // =========================================================
     // Redis Hash 필드 키 상수 (auth:guest:session:{token} Hash 내부 필드명)
     // =========================================================
@@ -153,6 +159,17 @@ public final class RedisKeys {
 
     /** 로비 Hash의 상태 필드. 저장 값: "WAITING" / "PLAYING" */
     public static final String FIELD_STATUS = "status";
+
+    /**
+     * 로비 Hash의 생성 시각 필드
+     * 저장 값 : System.currentTimeMillis() 기준 epoch milliseconds 문자열
+     *
+     * [사용 목적]
+     * 공개 로비 목록의 latest 정렬 기준으로 사용한다.
+     * Redis Set (lobby:public)은 순서를 보장하지 않으므로,
+     * 최신순 정렬을 안정적으로 제공하려면 로비 Hash에 생성 시각을 별도로 저장해야 한다.
+     */
+    public static final String FIELD_CREATED_AT_EPOCH_MILLIS = "created_at_epoch_millis";
 
     // =========================================================
     // 동적 키 생성 팩토리 메서드
@@ -413,5 +430,26 @@ public final class RedisKeys {
      */
     public static String mapPublicDetailKey(Long mapId) {
         return MAP_PUBLIC_DETAIL_PREFIX + mapId;
+    }
+
+    /**
+     * YouTube oEmbed 성공 캐시 키를 반환합니다.
+     *
+     * @param videoId YouTube videoId
+     * @return "youtube:oembed:success:{videoId}"
+     */
+    public static String youtubeOembedSuccessKey(String videoId) {
+        return YOUTUBE_OEMBED_SUCCESS_PREFIX + videoId;
+    }
+
+    /**
+     * YouTube oEmbed 실패 캐시 키를 반환합니다.
+     * videoId 기반으로 캐시하므로 동일 영상의 다른 URL 형식(watch/youtu.be/shorts/embed)에 대해 캐시가 공유됩니다.
+     *
+     * @param videoId YouTube videoId
+     * @return "youtube:oembed:failure:{videoId}"
+     */
+    public static String youtubeOembedFailureKey(String videoId) {
+        return YOUTUBE_OEMBED_FAILURE_PREFIX + videoId;
     }
 }
