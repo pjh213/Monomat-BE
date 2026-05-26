@@ -37,19 +37,22 @@ public class LobbyLuaScriptExecutor {
     private final RedisScript<String> createLobbyScript;
     private final RedisScript<String> kickLobbyScript;
     private final RedisScript<String> startLobbyScript;
+    private final RedisScript<String> compensateLobbyMapScript;
 
     public LobbyLuaScriptExecutor(
             StringRedisTemplate redisTemplate,
             @Qualifier("leaveLobbyScript") RedisScript<String> leaveLobbyScript,
             @Qualifier("createLobbyScript") RedisScript<String> createLobbyScript,
             @Qualifier("kickLobbyScript") RedisScript<String> kickLobbyScript,
-            @Qualifier("startLobbyScript") RedisScript<String> startLobbyScript
+            @Qualifier("startLobbyScript") RedisScript<String> startLobbyScript,
+            @Qualifier("compensateLobbyMapScript") RedisScript<String> compensateLobbyMapScript
     ) {
         this.redisTemplate = redisTemplate;
         this.leaveLobbyScript = leaveLobbyScript;
         this.createLobbyScript = createLobbyScript;
         this.kickLobbyScript = kickLobbyScript;
         this.startLobbyScript = startLobbyScript;
+        this.compensateLobbyMapScript = compensateLobbyMapScript;
     }
 
     /**
@@ -59,6 +62,9 @@ public class LobbyLuaScriptExecutor {
      * KEYS[1] = lobby:{code}:lock
      * KEYS[2] = lobby:{code}
      * KEYS[3] = lobby:public
+     * KEYS[4] = lobby:public:latest
+     * KEYS[5] = lobby:public:most_players
+     * KEYS[6] = lobby:public:most_available
      *
      * [ARGV 계약]
      * ARGV[1]  = host userIdentifier
@@ -83,7 +89,10 @@ public class LobbyLuaScriptExecutor {
         List<String> keys = List.of(
                 RedisKeys.lobbyCodeLockKey(inviteCode),
                 RedisKeys.lobbyKey(inviteCode),
-                RedisKeys.LOBBY_PUBLIC
+                RedisKeys.LOBBY_PUBLIC,
+                RedisKeys.LOBBY_PUBLIC_LATEST,
+                RedisKeys.LOBBY_PUBLIC_MOST_PLAYERS,
+                RedisKeys.LOBBY_PUBLIC_MOST_AVAILABLE
         );
 
         String lockTtlMs = String.valueOf(LobbyDefaults.INVITE_CODE_LOCK_TTL.toMillis());
@@ -116,6 +125,9 @@ public class LobbyLuaScriptExecutor {
      * KEYS[3] = lobby:{code}:order
      * KEYS[4] = lobby:{code}:kicked
      * KEYS[5] = lobby:public
+     * KEYS[6] = lobby:public:latest
+     * KEYS[7] = lobby:public:most_players
+     * KEYS[8] = lobby:public:most_available
      *
      * [ARGV 계약]
      * ARGV[1] = userIdentifier
@@ -124,12 +136,16 @@ public class LobbyLuaScriptExecutor {
      * @return leave_lobby.lua 반환 문자열
      */
     public String executeLeaveLobby(String code, String userIdentifier) {
+
         List<String> keys = List.of(
                 RedisKeys.lobbyKey(code),
                 RedisKeys.lobbyParticipantsKey(code),
                 RedisKeys.lobbyOrderKey(code),
                 RedisKeys.lobbyKickedKey(code),
-                RedisKeys.LOBBY_PUBLIC
+                RedisKeys.LOBBY_PUBLIC,
+                RedisKeys.LOBBY_PUBLIC_LATEST,
+                RedisKeys.LOBBY_PUBLIC_MOST_PLAYERS,
+                RedisKeys.LOBBY_PUBLIC_MOST_AVAILABLE
         );
 
         return redisTemplate.execute(
@@ -150,10 +166,13 @@ public class LobbyLuaScriptExecutor {
      * KEYS[4] = lobby:{code}:kicked
      * KEYS[5] = lobby:{code}:user_session:{targetUserIdentifier}
      * KEYS[6] = lobby:{code}:user_session_seq:{targetUserIdentifier}
+     * KEYS[7] = lobby:public:most_players
+     * KEYS[8] = lobby:public:most_available
      *
      * [ARGV 계약]
      * ARGV[1] = requesterIdentifier
      * ARGV[2] = targetUserIdentifier
+     * ARGV[3] = lobbyCode
      *
      * @return kick_lobby.lua 반환 문자열
      */
@@ -168,14 +187,17 @@ public class LobbyLuaScriptExecutor {
                 RedisKeys.lobbyOrderKey(code),
                 RedisKeys.lobbyKickedKey(code),
                 RedisKeys.lobbyUserSessionKey(code, targetUserIdentifier),
-                RedisKeys.lobbyUserSessionSequenceKey(code, targetUserIdentifier)
+                RedisKeys.lobbyUserSessionSequenceKey(code, targetUserIdentifier),
+                RedisKeys.LOBBY_PUBLIC_MOST_PLAYERS,
+                RedisKeys.LOBBY_PUBLIC_MOST_AVAILABLE
         );
 
         return redisTemplate.execute(
                 kickLobbyScript,
                 keys,
                 requesterIdentifier,
-                targetUserIdentifier
+                targetUserIdentifier,
+                code
         );
     }
 
@@ -228,6 +250,50 @@ public class LobbyLuaScriptExecutor {
                 RedisKeys.FIELD_MAP_ID,
                 LobbyStatus.WAITING.name(),
                 LobbyStatus.PLAYING.name()
+        );
+    }
+
+    /**
+     * compensate_lobby_map.lua를 실행한다.
+     *
+     * [KEYS 계약]
+     * KEYS[1] = lobby:{code}
+     *
+     * [ARGV 계약]
+     * ARGV[1] = status field name
+     * ARGV[2] = mapId field name
+     * ARGV[3] = mapTitle field name
+     * ARGV[4] = mapCategory field name
+     * ARGV[5] = WAITING status
+     * ARGV[6] = oldMapId (없으면 "")
+     * ARGV[7] = oldMapTitle (없으면 "")
+     * ARGV[8] = oldMapCategory (없으면 "")
+     *
+     * [null oldMetadata 처리]
+     * oldMetadata가 null이거나 필드가 일부 null이면 빈 문자열로 전달하여
+     * Lua가 HDEL로 처리하도록 한다. 이는 "이전이 맵 미선택 상태였음"을 의미한다.
+     *
+     * @return "COMPENSATED" | "SKIPPED_NOT_WAITING" | "LOBBY_NOT_FOUND"
+     */
+    public String executeCompensateLobbyMap(String code, LobbyMapMetadata oldMetadata) {
+        List<String> keys = List.of(RedisKeys.lobbyKey(code));
+
+        boolean restoreMap = oldMetadata != null
+                && oldMetadata.mapId() != null
+                && oldMetadata.mapTitle() != null
+                && oldMetadata.mapCategory() != null;
+
+        return redisTemplate.execute(
+                compensateLobbyMapScript,
+                keys,
+                RedisKeys.FIELD_STATUS,
+                RedisKeys.FIELD_MAP_ID,
+                RedisKeys.FIELD_MAP_TITLE,
+                RedisKeys.FIELD_MAP_CATEGORY,
+                LobbyStatus.WAITING.name(),
+                restoreMap ? String.valueOf(oldMetadata.mapId()) : EMPTY_REDIS_VALUE,
+                restoreMap ? oldMetadata.mapTitle() : EMPTY_REDIS_VALUE,
+                restoreMap ? oldMetadata.mapCategory() : EMPTY_REDIS_VALUE
         );
     }
 

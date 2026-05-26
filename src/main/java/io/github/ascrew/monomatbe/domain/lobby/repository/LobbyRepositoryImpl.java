@@ -2,6 +2,7 @@ package io.github.ascrew.monomatbe.domain.lobby.repository;
 
 import io.github.ascrew.monomatbe.domain.lobby.KickLobbyResult;
 import io.github.ascrew.monomatbe.domain.lobby.LeaveLobbyResult;
+import io.github.ascrew.monomatbe.domain.lobby.LobbyMapCompensationResult;
 import io.github.ascrew.monomatbe.domain.lobby.StartLobbyResult;
 import io.github.ascrew.monomatbe.domain.lobby.dto.CreateLobbyRequest;
 import io.github.ascrew.monomatbe.domain.lobby.dto.JoinLobbyResponse;
@@ -28,7 +29,7 @@ import java.util.Set;
  * 로비 Redis Repository 구현체
  *
  * [역할]
- * 이 클래스는 기존 LobbyRepository 인터페이스 계약을 유지하는 Facade
+ * 이 클래스는 기존 LobbyRepository 인터페이스 계약을 유지하는 Facade다.
  * Redis 접근 세부 책임은 역할별 하위 컴포넌트로 위임한다.
  *
  * [분리된 책임]
@@ -93,6 +94,46 @@ public class LobbyRepositoryImpl implements LobbyRepository {
   }
 
   @Override
+  public boolean existsPublicLatestIndex() {
+    return lobbyRedisQueryRepository.existsPublicLatestIndex();
+  }
+
+  @Override
+  public boolean existsPublicMostPlayersIndex() {
+    return lobbyRedisQueryRepository.existsPublicMostPlayersIndex();
+  }
+
+  @Override
+  public boolean existsPublicMostAvailableIndex() {
+    return lobbyRedisQueryRepository.existsPublicMostAvailableIndex();
+  }
+
+  @Override
+  public List<String> getPublicLobbyCodesByLatestIndex(long offset, int limit) {
+    return lobbyRedisQueryRepository.getPublicLobbyCodesByLatestIndex(offset, limit);
+  }
+
+  @Override
+  public List<String> getPublicLobbyCodesByMostPlayersIndex(long offset, int limit) {
+    return lobbyRedisQueryRepository.getPublicLobbyCodesByMostPlayersIndex(offset, limit);
+  }
+
+  @Override
+  public List<String> getPublicLobbyCodesByMostAvailableIndex(long offset, int limit) {
+    return lobbyRedisQueryRepository.getPublicLobbyCodesByMostAvailableIndex(offset, limit);
+  }
+
+  @Override
+  public List<LobbyRedisDto> getPublicLobbiesByCodes(List<String> lobbyCodes) {
+    return lobbyRedisQueryRepository.getPublicLobbiesByCodes(lobbyCodes);
+  }
+
+  @Override
+  public void removePublicLobbyIndexes(String lobbyCode) {
+    lobbyRedisQueryRepository.removePublicLobbyIndexes(lobbyCode);
+  }
+
+  @Override
   public Optional<JoinLobbyResponse> findByInviteCode(String inviteCode) {
     return lobbyRedisQueryRepository.findByInviteCode(inviteCode);
   }
@@ -119,6 +160,20 @@ public class LobbyRepositoryImpl implements LobbyRepository {
   @Override
   public boolean rollbackStartedLobbyStatus(String code) {
     return lobbyRedisCommandRepository.rollbackStartedLobbyStatus(code);
+  }
+
+  @Override
+  public void updateMapMetadata(String code, LobbyMapMetadata metadata) {
+    lobbyRedisCommandRepository.updateMapMetadata(code, metadata);
+  }
+
+  @Override
+  public LobbyMapCompensationResult compensateMapMetadataIfWaiting(
+          String code,
+          LobbyMapMetadata oldMetadata
+  ) {
+    String result = lobbyLuaScriptExecutor.executeCompensateLobbyMap(code, oldMetadata);
+    return lobbyLuaResultMapper.toLobbyMapCompensationResult(result, code);
   }
 
   // =========================================================
@@ -308,5 +363,10 @@ public class LobbyRepositoryImpl implements LobbyRepository {
   @Override
   public void incrementStartReconciliationMetric(String metricKey) {
     lobbyStartReconciliationRepository.incrementStartReconciliationMetric(metricKey);
+  }
+
+  @Override
+  public List<String> getPublicLobbyCodesForCleanup(int limit) {
+    return lobbyRedisQueryRepository.getPublicLobbyCodesForCleanup(limit);
   }
 }

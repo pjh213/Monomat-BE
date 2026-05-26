@@ -27,6 +27,7 @@ import io.github.ascrew.monomatbe.domain.map.entity.QuizMap;
 import io.github.ascrew.monomatbe.global.security.jwt.CustomPrincipal;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -63,6 +64,8 @@ public class LobbyStartService {
             "게임 시작 이벤트 발행을 위한 트랜잭션 동기화가 활성화되어 있지 않습니다.";
     private static final String ERROR_LOBBY_SNAPSHOT_NOT_FOUND =
             "로비 상태 정보가 일치하지 않습니다. 로비를 다시 생성해주세요.";
+    private static final String ERROR_LOBBY_LOCK_CONTENTION =
+            "다른 로비 상태 변경이 진행 중입니다. 잠시 후 다시 시도해주세요.";
 
     private static final String RECONCILIATION_REASON_DB_SYNC_FAILED =
             "START_DB_SYNC_FAILED";
@@ -75,6 +78,8 @@ public class LobbyStartService {
     private final LobbyRealtimeNotifier lobbyRealtimeNotifier;
     private final GameLobbyJpaRepository gameLobbyJpaRepository;
     private final LobbyStartPolicy lobbyStartPolicy;
+    private final io.github.ascrew.monomatbe.domain.game.service.GameSessionCreateService gameSessionCreateService;
+    private final io.github.ascrew.monomatbe.domain.game.service.GameRealtimeNotifier gameRealtimeNotifier;
 
     /**
      * 로비 게임 시작 요청을 처리한다.
@@ -105,8 +110,7 @@ public class LobbyStartService {
             );
         }
 
-        GameLobby gameLobby = gameLobbyJpaRepository.findByInviteCode(code)
-                .orElseGet(() -> handleMissingGameLobbySnapshot(code, requesterIdentifier));
+        GameLobby gameLobby = acquireGameLobbyRowLock(code, requesterIdentifier);
 
         QuizMap quizMap = lobbyStartPolicy.validateStartableMap(gameLobby);
 
@@ -119,9 +123,19 @@ public class LobbyStartService {
 
         handleStartLobbyResult(result);
 
+        io.github.ascrew.monomatbe.domain.game.dto.RoundStartDto firstRound;
         try {
             gameLobby.changeStatus(LobbyStatus.PLAYING);
             gameLobbyJpaRepository.saveAndFlush(gameLobby);
+            firstRound = gameSessionCreateService.createGameSession(gameLobby, quizMap);
+        } catch (io.github.ascrew.monomatbe.domain.game.exception.NotEnoughMapItemsException e) {
+            log.warn("게임 시작 요청 거부 - 문제 수 부족. code: {}, requester: {}", code, requesterIdentifier);
+            lobbyRepository.rollbackStartedLobbyStatus(code);
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "출제 가능한 문제 수가 라운드 수보다 적습니다.");
+        } catch (io.github.ascrew.monomatbe.domain.game.exception.GameSessionAlreadyExistsException e) {
+            log.warn("게임 시작 요청 거부 - 이미 진행 중인 게임 세션 존재. code: {}, requester: {}", code, requesterIdentifier);
+            lobbyRepository.rollbackStartedLobbyStatus(code);
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 진행 중인 게임 세션이 있습니다.");
         } catch (Exception e) {
             log.error(
                     "게임 시작 DB 상태 변경 실패 - Redis 상태 보상 롤백 시도. code: {}, requester: {}",
@@ -145,7 +159,7 @@ public class LobbyStartService {
             );
         }
 
-        registerGameStartedEventAfterCommit(code, requesterIdentifier);
+        registerGameStartedEventAfterCommit(code, requesterIdentifier, firstRound);
 
         log.info(
                 "게임 시작 처리 완료 - code: {}, requester: {}, mapId: {}, roundCount: {}",
@@ -154,6 +168,29 @@ public class LobbyStartService {
                 quizMap.getId(),
                 gameLobby.getRoundCount()
         );
+    }
+
+    /**
+     * GAME_LOBBY 행에 대한 PESSIMISTIC_WRITE 락을 획득한다.
+     *
+     * [예외 처리]
+     * - row 부재 → handleMissingGameLobbySnapshot 분기 (Redis 보상 삭제 + reconciliation)
+     * - 락 획득 타임아웃(3초) → PessimisticLockingFailureException을 잡아 409 CONFLICT로 변환.
+     *   동시 맵 변경(LobbyMapUpdateService)이 진행 중일 때 명확한 신호를 클라이언트에게 준다.
+     */
+    private GameLobby acquireGameLobbyRowLock(String code, String requesterIdentifier) {
+        try {
+            return gameLobbyJpaRepository.findByInviteCodeForUpdate(code)
+                    .orElseGet(() -> handleMissingGameLobbySnapshot(code, requesterIdentifier));
+        } catch (PessimisticLockingFailureException e) {
+            log.warn(
+                    "게임 시작 락 획득 타임아웃 - code: {}, requester: {}",
+                    code,
+                    requesterIdentifier,
+                    e
+            );
+            throw new ResponseStatusException(HttpStatus.CONFLICT, ERROR_LOBBY_LOCK_CONTENTION);
+        }
     }
 
     private GameLobby handleMissingGameLobbySnapshot(
@@ -220,7 +257,8 @@ public class LobbyStartService {
      */
     private void registerGameStartedEventAfterCommit(
             String code,
-            String requesterIdentifier
+            String requesterIdentifier,
+            io.github.ascrew.monomatbe.domain.game.dto.RoundStartDto firstRound
     ) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             log.error(
@@ -239,8 +277,23 @@ public class LobbyStartService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                lobbyRealtimeNotifier.notifyGameStarted(code);
-                lobbyRealtimeNotifier.notifyLobbyInfoRefresh(code, requesterIdentifier);
+                try {
+                    lobbyRealtimeNotifier.notifyGameStarted(code);
+                } catch (Exception e) {
+                    log.error("[ALERT_REQUIRED] GAME_STARTED 발행 실패 - code: {}, requester: {}", code, requesterIdentifier, e);
+                }
+
+                try {
+                    lobbyRealtimeNotifier.notifyLobbyInfoRefresh(code, requesterIdentifier);
+                } catch (Exception e) {
+                    log.error("[ALERT_REQUIRED] REFRESH_LOBBY_INFO 발행 실패 - code: {}, requester: {}", code, requesterIdentifier, e);
+                }
+
+                try {
+                    gameRealtimeNotifier.notifyRoundStart(code, firstRound);
+                } catch (Exception e) {
+                    log.error("[ALERT_REQUIRED] ROUND_START 발행 실패 - code: {}, requester: {}, roundNo: {}", code, requesterIdentifier, firstRound.roundNo(), e);
+                }
             }
         });
     }

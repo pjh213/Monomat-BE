@@ -345,7 +345,7 @@ POST /api/lobbies/join
 초대 코드로 로비 입장 가능 여부를 검증하고 로비 기본 정보를 반환합니다.
 JWT Access Token이 필요합니다. 게스트와 정식 회원 모두 입장 가능합니다.
 
-> 이 API는 입장 허가 사전 검증만 수행합니다.
+> 이 API는 입장 허가 사전 검증만 수행합니다.  
 > 실제 참여자 등록은 응답 수신 후 WebSocket `/topic/lobby/{inviteCode}` 구독 시점에 처리됩니다.
 
 클라이언트 처리 순서:
@@ -428,6 +428,35 @@ JWT Access Token이 필요합니다. 게스트와 정식 회원 모두 입장 �
 | `404 Not Found`    | 존재하지 않는 초대 코드             |
 | `409 Conflict`     | 게임이 이미 시작된 로비 또는 최대 인원 초과 |
 
+**REST join 성공 후 WebSocket SUBSCRIBE 실패 처리 기준**
+
+`POST /api/lobbies/join`은 UX용 사전 검증입니다.  
+실제 참여자 등록은 `SUBSCRIBE /topic/lobby/{inviteCode}` 시점에 `enter_lobby.lua`로 원자 처리됩니다.
+
+따라서 REST join이 성공했더라도 WebSocket SUBSCRIBE 시점에 로비 상태가 바뀌면 STOMP ERROR가 발생할 수 있습니다.
+
+클라이언트는 로비 입장을 다음 순서로 처리해야 합니다.
+
+```text
+1. POST /api/lobbies/join 호출
+2. 응답 성공 시 WebSocket CONNECT
+3. SUBSCRIBE /topic/lobby/{inviteCode}
+4. SUBSCRIBE 성공 후 로비 상세 조회 또는 refresh 이벤트 대기
+5. SUBSCRIBE 실패 시 STOMP ERROR payload의 action 기준으로 처리
+```
+
+| 상황 | 이유 | FE 처리 |
+| --- | --- | --- |
+| REST join 성공 후 다른 사용자가 먼저 입장 | SUBSCRIBE 시점에 `FULL` 발생 | `RETURN_TO_LOBBY_LIST` |
+| REST join 성공 후 방장이 게임 시작 | SUBSCRIBE 시점에 `LOBBY_NOT_WAITING` 발생 | `RETURN_TO_LOBBY_LIST` |
+| REST join 성공 후 로비 삭제 | SUBSCRIBE 시점에 `LOBBY_NOT_FOUND` 발생 | `RETURN_TO_LOBBY_LIST` |
+| 강퇴된 유저가 재입장 시도 | kicked Set 기준으로 `KICKED_USER` 발생 | `RETURN_TO_LOBBY_LIST` |
+| 같은 userIdentifier로 여러 세션이 경합 | 최신 sessionSequence 기준 stale 세션 차단 | `RECONNECT` |
+| Redis/Lua 일시 장애 | 최종 입장 상태 확인 불가 | `REFRESH_AND_RETRY` |
+
+> FE는 `POST /api/lobbies/join` 성공만으로 사용자를 로비 참여자로 확정하면 안 됩니다.  
+> 실제 로비 참여 확정 기준은 `SUBSCRIBE /topic/lobby/{code}` 성공입니다.
+
 ---
 
 #### 공개 로비 목록 조회
@@ -436,100 +465,139 @@ JWT Access Token이 필요합니다. 게스트와 정식 회원 모두 입장 �
 GET /api/lobbies
 ```
 
-공개(`isPrivate = false`) 로비 중 목록에 노출 가능한 로비를 반환합니다.
-Redis의 `lobby:public` Set을 기준으로 공개 로비 원본을 조회한 뒤, 서비스 계층에서 검색/필터/정렬 정책을 적용합니다.
+공개(isPrivate = false) 로비 중 목록에 노출 가능한 로비를 페이징 형태로 반환합니다.
 
-Redis 직렬화용 JsonMapper와 HTTP 응답용 JsonMapper를 분리했기 때문에, 응답은 Jackson 타입 정보가 포함되지 않은 순수 DTO 배열로 반환됩니다.
+공개 로비 목록에는 WAITING, PLAYING 상태 로비가 노출됩니다.
+FINISHED 상태 로비는 목록에서 제외됩니다.
+
+성능 최적화를 위해 keyword, mapCategory 필터가 없는 경우에는 Redis Sorted Set 정렬 인덱스에서 필요한 범위의 로비 코드만 조회합니다.
+필터가 있는 경우에는 전체 공개 로비 원본을 조회한 뒤 서비스 계층에서 필터링/정렬/페이징을 수행합니다.
 
 **목록 노출 정책**
 
-* 공개 로비 목록에는 `WAITING`, `PLAYING` 상태 로비가 노출됩니다.
-* `FINISHED` 상태 로비는 목록에서 제외됩니다.
-* `WAITING` 로비는 입장 가능한 로비입니다.
-* `PLAYING` 로비는 진행 중 상태로 목록에는 노출되지만, 현재 입장은 허용하지 않습니다.
-* 클라이언트는 `status=PLAYING` 로비를 “진행 중” 상태로 표시하고 입장 버튼을 비활성화해야 합니다.
+- 공개 로비 목록에는 WAITING, PLAYING 상태 로비가 노출됩니다.
+- FINISHED 상태 로비는 목록에서 제외됩니다.
+- WAITING 로비는 입장 가능한 로비입니다.
+- PLAYING 로비는 진행 중 상태로 목록에는 노출되지만, 현재 입장은 허용하지 않습니다.
+- 클라이언트는 status=PLAYING 로비를 “진행 중” 상태로 표시하고 입장 버튼을 비활성화해야 합니다.
 
-> `PLAYING` 로비는 현재 WebSocket 입장 단계에서 차단됩니다.  
-> 따라서 목록에는 노출되지만, 클라이언트는 `status=PLAYING` 로비를 “진행 중” 상태로 표시하고 입장 버튼을 비활성화해야 합니다.
+> PLAYING 로비는 WebSocket 입장 단계에서 차단됩니다.
+> 따라서 목록에는 노출되지만, 클라이언트는 status=PLAYING 로비를 “진행 중” 상태로 표시하고 입장 버튼을 비활성화해야 합니다.
 
 **Query Parameters**
 
-| 파라미터 | 타입 | 필수 | 기본값 | 설명 |
-| --- | --- | --- | --- | --- |
-| `keyword` | String | ❌ | 없음 | 로비 제목 검색어. 앞뒤 공백은 제거되며, 대소문자를 구분하지 않습니다. |
-| `mapCategory` | String | ❌ | 없음 | 맵 카테고리 필터. `K-POP`, `J-POP`, `POP`을 지원합니다. |
-| `sort` | String | ❌ | `latest` | 정렬 기준. `latest`, `most_players`, `most_available`을 지원합니다. |
+| 파라미터          | 타입      | 필수 | 기본값      | 설명                                                        |
+| ------------- | ------- | -- | -------- | --------------------------------------------------------- |
+| `keyword`     | String  | ❌  | 없음       | 로비 제목 검색어. 앞뒤 공백은 제거되며, 대소문자를 구분하지 않습니다.                  |
+| `mapCategory` | String  | ❌  | 없음       | 맵 카테고리 필터. `K-POP`, `J-POP`, `POP`을 지원합니다.                |
+| `sort`        | String  | ❌  | `latest` | 정렬 기준. `latest`, `most_players`, `most_available`을 지원합니다. |
+| `page`        | Integer | ❌  | `0`      | 0-based 페이지 번호입니다.                                        |
+| `size`        | Integer | ❌  | `20`     | 페이지 크기입니다. 최소 `1`, 최대 `100`까지 요청할 수 있습니다.                 |
 
 **정렬 기준**
 
-| 값 | 설명 |
-| --- | --- |
-| `latest` | 최신 생성 로비 순 |
-| `most_players` | 현재 인원이 많은 순. 동률이면 최신순 |
-| `most_available` | 빈자리가 많은 순. 동률이면 최신순 |
+| 값                | 설명                    | Redis 인덱스                     |
+| ---------------- | --------------------- | ----------------------------- |
+| `latest`         | 최신 생성 로비 순            | `lobby:public:latest`         |
+| `most_players` | 현재 인원이 많은 순. 동률은 Redis ZSET member 순서 기준 | `lobby:public:most_players` |
+| `most_available` | 빈자리가 많은 순. 동률은 Redis ZSET member 순서 기준 | `lobby:public:most_available` |
+
+> `most_players`, `most_available`는 Redis ZSET score 기준으로 정렬됩니다.  
+> 같은 score를 가진 로비 간 최신순 보장은 하지 않습니다. 동률 최신순 보장이 필요하면 복합 score 또는 별도 인덱스 설계가 필요합니다.
+
+**Redis 정렬 인덱스 사용 조건**
+
+| 조건                                          | 동작                              |
+| ------------------------------------------- | ------------------------------- |
+| `keyword` 없음 + `mapCategory` 없음 + 정렬 인덱스 존재 | Redis ZSET에서 필요한 범위의 로비 코드만 조회  |
+| `keyword` 있음                                | 기존 전체 공개 로비 조회 후 Java 필터/정렬/페이징 |
+| `mapCategory` 있음                            | 기존 전체 공개 로비 조회 후 Java 필터/정렬/페이징 |
+| 정렬 인덱스 없음                                   | 기존 전체 공개 로비 조회 후 Java 필터/정렬/페이징 |
 
 **Request 예시**
 
 ```http
 GET /api/lobbies
-GET /api/lobbies?keyword=퀴즈
-GET /api/lobbies?mapCategory=K-POP
-GET /api/lobbies?sort=most_players
-GET /api/lobbies?keyword=애니&mapCategory=J-POP&sort=most_available
+GET /api/lobbies?page=0&size=20
+GET /api/lobbies?sort=latest&page=0&size=20
+GET /api/lobbies?sort=most_players&page=0&size=20
+GET /api/lobbies?sort=most_available&page=0&size=20
+GET /api/lobbies?keyword=퀴즈&page=0&size=20
+GET /api/lobbies?mapCategory=K-POP&page=0&size=20
+GET /api/lobbies?keyword=애니&mapCategory=J-POP&sort=most_available&page=0&size=20
 ```
 
 **Response `200 OK`**
 
 ```json
-[
-  {
-    "code": "ABC123",
-    "hostId": "f8f6aa1b-3dd8-4b20-8ec8-9f7c7e0dd0fc",
-    "title": "K-POP 퀴즈방",
-    "mapId": 1,
-    "mapTitle": "K-POP 2세대",
-    "mapCategory": "K-POP",
-    "maxPlayers": 8,
-    "currentPlayers": 3,
-    "isPrivate": false,
-    "status": "WAITING",
-    "createdAtEpochMillis": 1778990123456
-  },
-  {
-    "code": "DEF456",
-    "hostId": "b17f7ee0-614f-4f5f-b770-83f6d4b85f4a",
-    "title": "진행 중인 POP 퀴즈방",
-    "mapId": 3,
-    "mapTitle": "POP 히트곡",
-    "mapCategory": "POP",
-    "maxPlayers": 6,
-    "currentPlayers": 4,
-    "isPrivate": false,
-    "status": "PLAYING",
-    "createdAtEpochMillis": 1778990000000
-  }
-]
+{
+  "items": [
+    {
+      "code": "ABC123",
+      "hostId": "f8f6aa1b-3dd8-4b20-8ec8-9f7c7e0dd0fc",
+      "title": "K-POP 퀴즈방",
+      "mapId": 1,
+      "mapTitle": "K-POP 2세대",
+      "mapCategory": "K-POP",
+      "maxPlayers": 8,
+      "currentPlayers": 3,
+      "isPrivate": false,
+      "status": "WAITING",
+      "createdAtEpochMillis": 1778990123456
+    },
+    {
+      "code": "DEF456",
+      "hostId": "b17f7ee0-614f-4f5f-b770-83f6d4b85f4a",
+      "title": "진행 중인 POP 퀴즈방",
+      "mapId": 3,
+      "mapTitle": "POP 히트곡",
+      "mapCategory": "POP",
+      "maxPlayers": 6,
+      "currentPlayers": 4,
+      "isPrivate": false,
+      "status": "PLAYING",
+      "createdAtEpochMillis": 1778990000000
+    }
+  ],
+  "page": 0,
+  "size": 20,
+  "hasNext": false
+}
 ```
 
-| 필드 | 타입 | 설명 |
-| --- | --- | --- |
-| `code` | String | 로비 초대 코드 |
-| `hostId` | String | 방장 사용자 식별자 |
-| `title` | String | 로비 제목 |
-| `mapId` | Long | 선택된 맵 ID. 미선택 시 `null` |
-| `mapTitle` | String | 선택된 맵 제목. 미선택 시 `null` |
-| `mapCategory` | String | 선택된 맵 카테고리. `K-POP`, `J-POP`, `POP`, 미선택 시 `null` |
-| `maxPlayers` | Integer | 최대 참여 인원 |
-| `currentPlayers` | Integer | 현재 참여 인원 |
-| `isPrivate` | Boolean | 비공개 여부. 공개 로비 목록에서는 `false` |
-| `status` | String | 로비 상태. 공개 로비 목록에서는 `WAITING`, `PLAYING`만 반환. `WAITING`은 입장 가능, `PLAYING`은 진행 중으로 목록에는 노출되지만 입장은 허용하지 않음 |
-| `createdAtEpochMillis` | Long | 로비 생성 시각. Redis `TIME` 기준 epoch milliseconds |
+**Response Fields**
+
+| 필드        | 타입      | 설명                |
+| --------- | ------- | ----------------- |
+| `items`   | Array   | 현재 페이지의 공개 로비 목록  |
+| `page`    | Integer | 0-based 현재 페이지 번호 |
+| `size`    | Integer | 요청한 페이지 크기        |
+| `hasNext` | Boolean | 다음 페이지 존재 여부      |
+
+**`items[]` Fields**
+
+| 필드                     | 타입      | 설명                                                                                                      |
+| ---------------------- | ------- | ------------------------------------------------------------------------------------------------------- |
+| `code`                 | String  | 로비 초대 코드                                                                                                |
+| `hostId`               | String  | 방장 사용자 식별자                                                                                              |
+| `title`                | String  | 로비 제목                                                                                                   |
+| `mapId`                | Long    | 선택된 맵 ID. 미선택 시 `null`                                                                                  |
+| `mapTitle`             | String  | 선택된 맵 제목. 미선택 시 `null`                                                                                  |
+| `mapCategory`          | String  | 선택된 맵 카테고리. `K-POP`, `J-POP`, `POP`, 미선택 시 `null`                                                       |
+| `maxPlayers`           | Integer | 최대 참여 인원                                                                                                |
+| `currentPlayers`       | Integer | 현재 참여 인원. Redis `lobby:{code}.current_players`를 우선 사용하고 없으면 participants Set 크기로 fallback합니다.           |
+| `isPrivate`            | Boolean | 비공개 여부. 공개 로비 목록에서는 `false`                                                                             |
+| `status`               | String  | 로비 상태. 공개 로비 목록에서는 `WAITING`, `PLAYING`만 반환. `WAITING`은 입장 가능, `PLAYING`은 진행 중으로 목록에는 노출되지만 입장은 허용하지 않음 |
+| `createdAtEpochMillis` | Long    | 로비 생성 시각. Redis `TIME` 기준 epoch milliseconds                                                            |
 
 **Error**
 
-| 상태 코드 | 설명 |
-| --- | --- |
+| 상태 코드             | 설명                                  |
+| ----------------- | ----------------------------------- |
 | `400 Bad Request` | 지원하지 않는 `sort` 값 또는 `mapCategory` 값 |
+| `400 Bad Request` | `page`가 0보다 작은 경우                   |
+| `400 Bad Request` | `size`가 1보다 작거나 최대값 100을 초과한 경우     |
+
 ---
 
 #### 로비 상세 조회
@@ -575,11 +643,13 @@ JWT Access Token이 필요합니다.
   "players": [
     {
       "userIdentifier": "f8f6aa1b-3dd8-4b20-8ec8-9f7c7e0dd0fc",
+      "nickname": "방장닉네임",
       "host": true,
       "ready": false
     },
     {
       "userIdentifier": "b17f7ee0-614f-4f5f-b770-83f6d4b85f4a",
+      "nickname": "참여자닉네임",
       "host": false,
       "ready": true
     }
@@ -603,6 +673,7 @@ JWT Access Token이 필요합니다.
 | `timeLimitSeconds`         | Integer | 라운드 제한 시간                            |
 | `players`                  | Array   | 현재 로비 참여자 목록                         |
 | `players[].userIdentifier` | String  | 참여자 식별자                              |
+| `players[].nickname`       | String  | 참여자 닉네임                              |
 | `players[].host`           | Boolean | 방장 여부                                |
 | `players[].ready`          | Boolean | ready 여부. 방장은 ready 대상이 아니므로 `false` |
 | `canStart`                 | Boolean | 조회 시점 기준 게임 시작 가능 여부                 |
@@ -681,6 +752,60 @@ JWT Access Token이 필요합니다.
 
 ---
 
+#### 로비 맵 변경
+
+```http
+PATCH /api/lobbies/{code}/map
+```
+
+방장이 로비 대기실에서 게임에 사용할 맵을 변경합니다.
+JWT Access Token이 필요합니다.
+
+**정책**
+
+* 로비 상태가 `WAITING`일 때만 변경할 수 있습니다.
+* 방장만 맵을 변경할 수 있습니다.
+* 공개 맵은 누구나 연결할 수 있습니다.
+* 비공개 맵은 소유자만 연결할 수 있습니다.
+* 맵 변경 성공 시 Redis `lobby:{code}` hash의 `map_id`, `map_title`, `map_category`와 DB `GAME_LOBBY.map_id`를 동기화합니다.
+* Redis 선갱신 후 DB 갱신에 실패하면 Redis를 이전 값으로 보상 복구합니다.
+* 변경 성공 시 `/topic/lobby/{code}/refresh`로 `REFRESH_LOBBY_INFO`가 브로드캐스트됩니다.
+
+**Request Header**
+
+| 헤더              | 필수 | 설명                     |
+| --------------- | -- | ---------------------- |
+| `Authorization` | ✅  | `Bearer {accessToken}` |
+
+**Request Body**
+
+```json
+{
+  "mapId": 2
+}
+```
+
+| 필드      | 타입   | 필수 | 설명                  |
+| ------- | ---- | -- | ------------------- |
+| `mapId` | Long | ✅  | 연결할 맵 ID (양의 정수) |
+
+**Response `204 No Content`**
+
+응답 Body 없음.
+
+**Error**
+
+| 상태 코드                       | 설명                         |
+| --------------------------- | -------------------------- |
+| `400 Bad Request`           | `mapId`가 누락되었거나 양수가 아닌 경우  |
+| `401 Unauthorized`          | JWT 토큰 없음 또는 만료            |
+| `403 Forbidden`             | 방장이 아닌 사용자가 맵 변경 시도 또는 비공개 맵에 접근 권한 없음 |
+| `404 Not Found`             | 존재하지 않는 로비 또는 맵            |
+| `409 Conflict`              | `WAITING` 상태가 아닌 로비 또는 삭제된 맵 |
+| `500 Internal Server Error` | Redis-DB 동기화 실패             |
+
+---
+
 #### 로비 게임 시작
 
 ```http
@@ -735,6 +860,7 @@ JWT Access Token이 필요하며, 방장만 호출할 수 있습니다.
 * 로비 상태가 이미 변경된 경우
 * participants Set에 stale 유저가 남아 있는 경우
 * Redis participants/ready/session 정합성이 깨진 경우
+* 이미 진행 중인 게임 세션이 존재하는 경우
 
 ---
 
@@ -999,6 +1125,31 @@ SUBSCRIBE /topic/lobby/{code}/game
 * 이 메시지를 수신하면 로비 대기실에서 인게임 화면으로 전환합니다.
 * 전환 전 필요하다면 `GET /api/lobbies/{code}`를 재조회해 `status=PLAYING`을 확인할 수 있습니다.
 
+#### 인게임 라운드 시작 이벤트 구독
+
+```text
+SUBSCRIBE /topic/game/{code}/round
+```
+
+방장이 게임을 시작하거나 다음 라운드로 넘어갈 때, 서버가 이 채널로 라운드 시작 정보를 브로드캐스트합니다.
+
+**수신 메시지 (RoundStartDto)**
+
+```json
+{
+  "type": "ROUND_READY",
+  "videoId": "dQw4w9WgXcQ",
+  "youtubeUrl": "https://youtube.com/watch?v=dQw4w9WgXcQ",
+  "startTime": 10,
+  "endTime": 30,
+  "timeLimitSeconds": 30,
+  "roundNo": 1,
+  "serverStartedAt": 1716500000000
+}
+```
+
+> **참고**: 클라이언트 스포일러 방지를 위해 정답, 힌트, 제목, 아티스트 등의 메타데이터는 라운드 시작 시점에 전송되지 않으며, 정답 공개 시점에 별도의 채널과 DTO(`RoundMetadataDto`)를 통해 전송될 예정입니다.
+
 #### 로비 유저 강퇴 송신
 
 ```text
@@ -1029,15 +1180,113 @@ SEND /app/lobby/{code}/kick
 
 ### STOMP ERROR 프레임
 
-인증 실패 또는 유효하지 않은 요청 시 STOMP ERROR 프레임으로 응답합니다.
+인증 실패, 유효하지 않은 요청, 로비 입장 실패 등 WebSocket 처리 중 클라이언트가 복구 가능한 방식으로 판단해야 하는 오류는 STOMP `ERROR` 프레임으로 응답합니다.
 
-| 상황                          | 메시지                                              |
-| --------------------------- | ------------------------------------------------ |
-| `userIdentifier` 헤더 누락      | `STOMP CONNECT: 사용자 식별자가 없습니다. 연결이 거부되었습니다.`     |
-| 유효하지 않은 `userIdentifier` 형식 | `STOMP CONNECT: 유효하지 않은 식별자 형식입니다. 연결이 거부되었습니다.` |
-| 인증 없이 SEND/SUBSCRIBE 시도     | `인증 정보가 존재하지 않습니다.`                              |
-| 최대 인원 초과 로비 구독 시도           | `로비 입장 실패: 최대 인원에 도달했습니다.`                       |
-| 존재하지 않는 로비 구독 시도            | `로비 입장 실패: 존재하지 않는 로비입니다.`                       |
+기존에는 ERROR body에 문자열 메시지만 내려갔지만, 로비 입장 실패 케이스를 FE가 안정적으로 처리할 수 있도록 JSON payload를 표준 응답 형식으로 사용합니다.
+
+#### STOMP ERROR Payload
+
+```json
+{
+  "type": "STOMP_ERROR",
+  "code": "LOBBY_NOT_FOUND",
+  "message": "존재하지 않는 로비입니다.",
+  "action": "RETURN_TO_LOBBY_LIST",
+  "recoverable": false,
+  "timestamp": "2026-05-25T00:00:00Z"
+}
+```
+
+| 필드 | 타입 | 설명 |
+| --- | --- | --- |
+| `type` | String | 고정값 `STOMP_ERROR` |
+| `code` | String | 클라이언트 분기용 에러 코드 |
+| `message` | String | 사용자에게 표시 가능한 메시지 |
+| `action` | String | FE가 수행해야 하는 후속 동작 |
+| `recoverable` | Boolean | 같은 화면에서 재시도 가능한 오류인지 여부 |
+| `timestamp` | String | 서버에서 ERROR payload를 생성한 시각 |
+
+#### FE 처리 원칙
+
+FE는 `message` 문자열을 파싱하지 말고, 반드시 `code`, `action`, `recoverable` 기준으로 분기해야 합니다.
+
+| action | FE 권장 처리 |
+| --- | --- |
+| `RETURN_TO_LOBBY_LIST` | 현재 로비 입장을 중단하고 로비 목록 또는 이전 화면으로 복귀 |
+| `RETRY_CONNECT` | WebSocket 연결 자체를 다시 시도 |
+| `REFRESH_AND_RETRY` | 현재 화면 상태를 새로고침한 뒤 다시 시도 |
+| `RECONNECT` | 현재 WebSocket 세션을 폐기하고 새 세션으로 재연결 |
+| `NONE` | 별도 화면 전환 없이 현재 상태 유지 |
+
+#### CONNECT 실패 코드
+
+| code | message | action | recoverable |
+| --- | --- | --- | --- |
+| `CONNECT_USER_IDENTIFIER_MISSING` | 사용자 식별자가 없습니다. 다시 로그인 후 접속해주세요. | `RETRY_CONNECT` | `true` |
+| `CONNECT_USER_IDENTIFIER_INVALID` | 유효하지 않은 사용자 식별자입니다. 다시 로그인 후 접속해주세요. | `RETRY_CONNECT` | `true` |
+| `CONNECT_SESSION_SEQUENCE_FAILED` | WebSocket 세션 생성에 실패했습니다. 다시 접속해주세요. | `RETRY_CONNECT` | `true` |
+| `CONNECT_WS_SESSION_ID_MISSING` | WebSocket 세션 ID가 없습니다. 다시 접속해주세요. | `RETRY_CONNECT` | `true` |
+| `CONNECT_ONLINE_STATUS_FAILED` | 사용자 온라인 상태 저장에 실패했습니다. 잠시 후 다시 접속해주세요. | `RETRY_CONNECT` | `true` |
+
+#### 인증/세션 실패 코드
+
+| code | message | action | recoverable |
+| --- | --- | --- | --- |
+| `SESSION_UNAUTHENTICATED` | 인증 정보가 존재하지 않습니다. 다시 접속해주세요. | `RETRY_CONNECT` | `true` |
+| `LOBBY_ENTER_WS_SESSION_MISSING` | 로비 입장에 필요한 WebSocket 세션 ID가 없습니다. 다시 접속해주세요. | `RECONNECT` | `true` |
+| `LOBBY_ENTER_SESSION_ATTRIBUTES_MISSING` | 로비 입장에 필요한 세션 정보가 없습니다. 새로고침 후 다시 시도해주세요. | `REFRESH_AND_RETRY` | `true` |
+| `LOBBY_ENTER_SEQUENCE_MISSING` | WebSocket 세션 순서 정보가 없습니다. 새로고침 후 다시 시도해주세요. | `REFRESH_AND_RETRY` | `true` |
+
+#### 로비 입장 실패 코드
+
+`POST /api/lobbies/join`은 입장 가능 여부를 확인하는 사전 검증 API입니다.  
+실제 참여자 등록은 WebSocket `SUBSCRIBE /topic/lobby/{code}` 시점에 `enter_lobby.lua`로 원자 처리됩니다.
+
+따라서 REST join이 성공했더라도, WebSocket SUBSCRIBE 시점의 최종 상태가 달라지면 STOMP ERROR가 발생할 수 있습니다.
+
+| code | 발생 조건 | message | action | recoverable |
+| --- | --- | --- | --- | --- |
+| `LOBBY_NOT_FOUND` | 로비가 삭제되었거나 존재하지 않음 | 존재하지 않는 로비입니다. | `RETURN_TO_LOBBY_LIST` | `false` |
+| `LOBBY_FULL` | REST join 이후 다른 사용자가 먼저 입장하여 정원이 찬 경우 | 로비 최대 인원에 도달했습니다. | `RETURN_TO_LOBBY_LIST` | `false` |
+| `LOBBY_NOT_WAITING` | 로비가 이미 `PLAYING` 또는 `FINISHED` 상태로 변경된 경우 | 이미 시작되었거나 입장할 수 없는 로비입니다. | `RETURN_TO_LOBBY_LIST` | `false` |
+| `LOBBY_INVALID_CAPACITY` | Redis 로비 정원 정보가 없거나 유효하지 않은 경우 | 로비 정원 정보가 유효하지 않습니다. | `RETURN_TO_LOBBY_LIST` | `false` |
+| `LOBBY_STALE_SESSION` | 더 최신 WebSocket 세션이 이미 존재하는 경우 | 더 최신 WebSocket 세션이 이미 존재합니다. 다시 접속해주세요. | `RECONNECT` | `true` |
+| `LOBBY_KICKED_USER` | 강퇴된 사용자가 같은 로비에 재입장하려는 경우 | 강퇴된 로비에는 재입장할 수 없습니다. | `RETURN_TO_LOBBY_LIST` | `false` |
+| `LOBBY_INVALID_SEQUENCE` | WebSocket sessionSequence가 유효하지 않은 경우 | 로비 입장 세션 상태가 유효하지 않습니다. 새로고침 후 다시 시도해주세요. | `REFRESH_AND_RETRY` | `true` |
+| `LOBBY_ENTER_UNKNOWN_RESULT` | `enter_lobby.lua`가 알 수 없는 반환값을 반환한 경우 | 로비 입장 중 알 수 없는 서버 응답이 발생했습니다. 새로고침 후 다시 시도해주세요. | `REFRESH_AND_RETRY` | `true` |
+| `LOBBY_ENTER_TEMPORARILY_UNAVAILABLE` | Redis/Lua 실행이 일시적으로 실패한 경우 | 일시적으로 로비 입장 상태를 확인할 수 없습니다. 새로고침 후 다시 시도해주세요. | `REFRESH_AND_RETRY` | `true` |
+
+#### 서버 내부 오류 코드
+
+| code | message | action | recoverable |
+| --- | --- | --- | --- |
+| `INTERNAL_STOMP_ERROR` | WebSocket 처리 중 서버 오류가 발생했습니다. | `REFRESH_AND_RETRY` | `true` |
+
+#### REST join 성공 후 WebSocket SUBSCRIBE 실패 처리 기준
+
+클라이언트는 로비 입장을 다음 순서로 처리해야 합니다.
+
+```text
+1. POST /api/lobbies/join 호출
+2. 응답 성공 시 WebSocket CONNECT
+3. SUBSCRIBE /topic/lobby/{inviteCode}
+4. SUBSCRIBE 성공 후 로비 상세 조회 또는 refresh 이벤트 대기
+5. SUBSCRIBE 실패 시 STOMP ERROR payload의 action 기준으로 처리
+```
+
+REST join 성공 후에도 다음 상황에서는 WebSocket SUBSCRIBE가 실패할 수 있습니다.
+
+| 상황 | 이유 | FE 처리 |
+| --- | --- | --- |
+| REST join 성공 후 다른 사용자가 먼저 입장 | SUBSCRIBE 시점에 `FULL` 발생 | `RETURN_TO_LOBBY_LIST` |
+| REST join 성공 후 방장이 게임 시작 | SUBSCRIBE 시점에 `LOBBY_NOT_WAITING` 발생 | `RETURN_TO_LOBBY_LIST` |
+| REST join 성공 후 로비 삭제 | SUBSCRIBE 시점에 `LOBBY_NOT_FOUND` 발생 | `RETURN_TO_LOBBY_LIST` |
+| 강퇴된 유저가 재입장 시도 | kicked Set 기준으로 `KICKED_USER` 발생 | `RETURN_TO_LOBBY_LIST` |
+| 같은 userIdentifier로 여러 세션이 경합 | 최신 sessionSequence 기준 stale 세션 차단 | `RECONNECT` |
+| Redis/Lua 일시 장애 | 최종 입장 상태 확인 불가 | `REFRESH_AND_RETRY` |
+
+> FE는 `POST /api/lobbies/join` 성공만으로 사용자를 로비 참여자로 확정하면 안 됩니다.  
+> 실제 로비 참여 확정 기준은 `SUBSCRIBE /topic/lobby/{code}` 성공입니다.
 
 ---
 
