@@ -27,10 +27,11 @@ end
 redis.call('DEL', sessionKey, roundsKey, playersKey)
 
 -- 2. 세션 메타데이터 저장
-redis.call('HSET', sessionKey, 
+redis.call('HSET', sessionKey,
     'current_round_no', '1',
-    'total_round_count', totalRounds,
-    'status', 'READY',
+    'total_question_count', totalRounds,
+    'status', 'PLAYING',
+    'round_phase', 'READY',
     'time_limit_seconds', timeLimitSeconds,
     'round_started_at', roundStartedAt
 )

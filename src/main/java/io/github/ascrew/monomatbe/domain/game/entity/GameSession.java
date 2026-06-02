@@ -29,8 +29,8 @@ public class GameSession {
     @Column(name = "current_round_no", nullable = false)
     private Integer currentRoundNo;
 
-    @Column(name = "total_round_count", nullable = false)
-    private Integer totalRoundCount;
+    @Column(name = "total_question_count", nullable = false)
+    private Integer totalQuestionCount;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
@@ -60,9 +60,16 @@ public class GameSession {
 
     public void finish() {
         this.status = GameSessionStatus.FINISHED;
+        this.endedAt = java.time.LocalDateTime.now();
     }
 
-    public void nextRound() {
-        this.currentRoundNo++;
+    public void moveToNextRound(int targetRoundNo) {
+        if (targetRoundNo != this.currentRoundNo + 1) {
+            throw new IllegalStateException("다음 라운드로만 이동할 수 있습니다. current: " + this.currentRoundNo + ", target: " + targetRoundNo);
+        }
+        if (targetRoundNo > this.totalQuestionCount) {
+            throw new IllegalStateException("최대 라운드 수를 초과할 수 없습니다. total: " + this.totalQuestionCount + ", target: " + targetRoundNo);
+        }
+        this.currentRoundNo = targetRoundNo;
     }
 }

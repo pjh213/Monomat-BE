@@ -40,6 +40,15 @@ public final class RedisKeys {
     /** 로비별 준비 완료 유저 Set 키 접미사 */
     private static final String READY_SUFFIX = ":ready";
 
+    /** 로비별 최근 채팅 메시지 List 키 접미사 */
+    private static final String RECENT_CHAT_MESSAGES_SUFFIX = ":chats:recent";
+
+    /** 채팅 발신자 프로필 캐시 키 접두사 */
+    private static final String CHAT_SENDER_PROFILE_PREFIX = "chat:sender-profile:";
+
+    /** 로비 채팅 메시지 신고 중복 방지 lock 키 접두사 */
+    private static final String LOBBY_CHAT_MESSAGE_REPORT_LOCK_PREFIX = "lock:report:lobby-chat-message:";
+
     /** 로비 내 사용자별 현재 유효 WebSocket 세션 키 접미사 */
     private static final String USER_SESSION_SUFFIX = ":user_session:";
 
@@ -78,6 +87,12 @@ public final class RedisKeys {
 
     /** YouTube oEmbed 실패 캐시 키 접두사 */
     private static final String YOUTUBE_OEMBED_FAILURE_PREFIX = "youtube:oembed:failure:";
+
+    /** 로비 채팅 쿨타임 키 접두사 */
+    private static final String LOBBY_CHAT_COOLDOWN_PREFIX = "chat:lobby:";
+
+    /** 로비 채팅 최근 메시지 키 접두사 */
+    private static final String LOBBY_CHAT_RECENT_MESSAGE_PREFIX = "chat:lobby:";
 
     // =========================================================
     // Redis Hash 필드 키 상수 (auth:guest:session:{token} Hash 내부 필드명)
@@ -225,6 +240,12 @@ public final class RedisKeys {
     /** 로비 Hash의 상태 필드. 저장 값: "WAITING" / "PLAYING" */
     public static final String FIELD_STATUS = "status";
 
+    /** 로비 Hash의 문제 수 필드 */
+    public static final String FIELD_QUESTION_COUNT = "question_count";
+
+    /** 로비 Hash의 제한 시간(초) 필드 */
+    public static final String FIELD_TIME_LIMIT_SECONDS = "time_limit_seconds";
+
     /**
      * 로비 Hash의 생성 시각 필드
      * 저장 값 : System.currentTimeMillis() 기준 epoch milliseconds 문자열
@@ -280,7 +301,9 @@ public final class RedisKeys {
         return LOBBY_PREFIX + code + ORDER_SUFFIX;
     }
 
-    public static String lobbyKickedKey(String code) { return LOBBY_PREFIX + code + KICKED_SUFFIX; }
+    public static String lobbyKickedKey(String code) {
+        return LOBBY_PREFIX + code + KICKED_SUFFIX;
+    }
 
     /**
      * 로비별 준비 완료 유저 Set 키를 반환한다.
@@ -289,11 +312,77 @@ public final class RedisKeys {
      * - Key   : lobby:{code}:ready
      * - Type  : Set
      * - Value : 준비 완료 상태인 userIdentifier 목록
+     *
      * @param code 로비 초대 코드
      * @return "lobby:{code}:ready"
      */
     public static String lobbyReadyKey(String code) {
         return LOBBY_PREFIX + code + READY_SUFFIX;
+    }
+
+    /**
+     * 로비별 최근 채팅 메시지 List 키를 반환한다.
+     *
+     * 저장 구조:
+     * - Key   : lobby:{code}:chats:recent
+     * - Type  : List
+     * - Value : 서버가 신뢰 가능한 값으로 재구성한 ChatMessageDto JSON
+     *
+     * @param code 로비 초대 코드
+     * @return 로비 최근 채팅 Redis List key
+     */
+    public static String lobbyRecentChatMessagesKey(String code) {
+        return LOBBY_PREFIX + code + RECENT_CHAT_MESSAGES_SUFFIX;
+    }
+
+    /**
+     * 로비 채팅 메시지 신고 중복 방지 lock key를 반환한다.
+     *
+     * 저장 구조:
+     * - Key   : lock:report:lobby-chat-message:{reporterId}:{lobbyId}:{messageId}
+     * - Type  : String
+     * - Value : "1"
+     * - TTL   : 짧은 시간
+     *
+     * [사용 목적]
+     * 동일 사용자의 동일 로비/동일 채팅 메시지 신고가 동시에 들어올 때
+     * DB 중복 조회와 저장 사이의 race condition을 방지한다.
+     *
+     * @param reporterId 신고자 users.id
+     * @param lobbyId 로비 ID
+     * @param messageId 채팅 메시지 ID
+     * @return Redis lock key
+     */
+    public static String lobbyChatMessageReportLockKey(
+            Long reporterId,
+            Long lobbyId,
+            String messageId
+    ) {
+        return LOBBY_CHAT_MESSAGE_REPORT_LOCK_PREFIX
+                + reporterId
+                + ":"
+                + lobbyId
+                + ":"
+                + messageId;
+    }
+
+    /**
+     * 채팅 발신자 프로필 캐시 키를 반환한다.
+     *
+     * 저장 구조:
+     * - Key   : chat:sender-profile:{userIdentifier}
+     * - Type  : String
+     * - Value : ChatSenderProfile JSON
+     *
+     * [사용 목적]
+     * 채팅 메시지 송신 hot path에서 매 메시지마다 DB로 사용자 프로필을 조회하지 않도록
+     * userIdentifier 기준 senderId / nickname 스냅샷을 짧은 TTL로 캐싱한다.
+     *
+     * @param userIdentifier 사용자 식별자
+     * @return 채팅 발신자 프로필 캐시 키
+     */
+    public static String chatSenderProfileKey(String userIdentifier) {
+        return CHAT_SENDER_PROFILE_PREFIX + userIdentifier;
     }
 
     /**
@@ -488,6 +577,37 @@ public final class RedisKeys {
     }
 
     /**
+     * 검색 조건이 포함된 공개 맵 목록 캐시 키를 반환합니다.
+     *
+     * <p>버전 기반 무효화 정책이 유지되므로 {@link #mapPublicListVersionKey()} 버전 증가 시
+     * 이 키로 저장된 모든 캐시도 함께 무효화됩니다.
+     *
+     * @param version  캐시 버전
+     * @param keyword  제목 검색어 (null 또는 빈 문자열 허용)
+     * @param category 카테고리 이름 (null 허용)
+     * @param sort     정렬 기준 이름 (null 허용)
+     * @param page     페이지 번호
+     * @param size     페이지 크기
+     * @return "map:public:list:v:{version}:k:{keyword}:c:{category}:sort:{sort}:p:{page}:s:{size}"
+     */
+    public static String mapPublicListKey(
+            String version,
+            String keyword,
+            String category,
+            String sort,
+            int page,
+            int size
+    ) {
+        return MAP_PUBLIC_LIST_PREFIX
+                + ":v:" + version
+                + ":k:" + (keyword == null ? "" : keyword)
+                + ":c:" + (category == null ? "" : category)
+                + ":sort:" + (sort == null ? "" : sort)
+                + ":p:" + page
+                + ":s:" + size;
+    }
+
+    /**
      * 공개 맵 단건 캐시 키를 반환합니다.
      *
      * @param mapId 맵 ID
@@ -518,11 +638,49 @@ public final class RedisKeys {
         return YOUTUBE_OEMBED_FAILURE_PREFIX + videoId;
     }
 
+    /**
+     * 로비 채팅 쿨타임 키를 반환한다.
+     *
+     * 저장 구조:
+     * - Key   : chat:lobby:{code}:cooldown:{userIdentifier}
+     * - Value : "1"
+     * - TTL   : 채팅 쿨타임
+     *
+     * @param code 로비 초대 코드
+     * @param userIdentifier 사용자 식별자
+     * @return 로비 채팅 쿨타임 Redis key
+     */
+    public static String lobbyChatCooldownKey(String code, String userIdentifier) {
+        return LOBBY_CHAT_COOLDOWN_PREFIX + code + ":cooldown:" + userIdentifier;
+    }
+
+    /**
+     * 로비 채팅 최근 메시지 키를 반환한다.
+     *
+     * 저장 구조:
+     * - Key   : chat:lobby:{code}:recent:{userIdentifier}
+     * - Value : 최근 전송한 메시지 본문 해시
+     * - TTL   : 반복 메시지 감지 기간
+     *
+     * @param code 로비 초대 코드
+     * @param userIdentifier 사용자 식별자
+     * @return 로비 채팅 최근 메시지 Redis key
+     */
+    public static String lobbyChatRecentMessageKey(String code, String userIdentifier) {
+        return LOBBY_CHAT_RECENT_MESSAGE_PREFIX + code + ":recent:" + userIdentifier;
+    }
+
     // =========================================================
     // 게임 세션 관련 상수
     // =========================================================
 
     private static final String GAME_SESSION_PREFIX = "game:session:";
+
+    /** 게임 세션 Hash의 현재 라운드 번호 필드 */
+    public static final String FIELD_CURRENT_ROUND_NO = "current_round_no";
+
+    /** 게임 세션 Hash의 라운드 진행 단계 필드 (READY, PLAYING, ENDED, FINISHED) */
+    public static final String FIELD_ROUND_PHASE = "round_phase";
 
     /**
      * 게임 세션 메타데이터 키를 반환합니다.
@@ -552,5 +710,102 @@ public final class RedisKeys {
      */
     public static String gameSessionPlayersKey(String lobbyCode) {
         return GAME_SESSION_PREFIX + lobbyCode + ":players";
+    }
+
+    /**
+     * 특정 라운드의 재생 준비 완료된 유저 Set 키를 반환합니다.
+     *
+     * @param lobbyCode 로비 초대 코드
+     * @param roundNo 라운드 번호
+     * @return "game:session:{lobbyCode}:round:{roundNo}:ready"
+     */
+    public static String gameSessionRoundReadyKey(String lobbyCode, int roundNo) {
+        return GAME_SESSION_PREFIX + lobbyCode + ":round:" + roundNo + ":ready";
+    }
+
+    /**
+     * 특정 라운드의 재생 시작 중복 방지 SETNX 락 키를 반환합니다.
+     *
+     * @param lobbyCode 로비 초대 코드
+     * @param roundNo 라운드 번호
+     * @return "game:session:{lobbyCode}:round:{roundNo}:playback_lock"
+     */
+    public static String gameSessionPlaybackLockKey(String lobbyCode, int roundNo) {
+        return GAME_SESSION_PREFIX + lobbyCode + ":round:" + roundNo + ":playback_lock";
+    }
+
+    /**
+     * 특정 라운드의 캐싱된 문제 데이터 Hash 키를 반환합니다.
+     *
+     * @param lobbyCode 로비 초대 코드
+     * @param roundNo 라운드 번호
+     * @return "game:session:{lobbyCode}:round:{roundNo}:data"
+     */
+    public static String gameSessionRoundDataKey(String lobbyCode, int roundNo) {
+        return GAME_SESSION_PREFIX + lobbyCode + ":round:" + roundNo + ":data";
+    }
+
+    /**
+     * 특정 라운드에서 정답을 맞춘 유저 식별자 Set 키를 반환합니다.
+     *
+     * @param lobbyCode 로비 초대 코드
+     * @param roundNo 라운드 번호
+     * @return "game:session:{lobbyCode}:round:{roundNo}:correct_players"
+     */
+    public static String gameSessionRoundCorrectPlayersKey(String lobbyCode, int roundNo) {
+        return GAME_SESSION_PREFIX + lobbyCode + ":round:" + roundNo + ":correct_players";
+    }
+
+    /**
+     * 특정 라운드의 재생 시작 시각 필드명을 반환합니다.
+     *
+     * @param roundNo 라운드 번호
+     * @return "playback_started_at:{roundNo}"
+     */
+    public static String gameSessionRoundPlaybackStartedAtField(int roundNo) {
+        return "playback_started_at:" + roundNo;
+    }
+
+    /**
+     * 특정 라운드의 종료 시각 필드명을 반환합니다.
+     *
+     * @param roundNo 라운드 번호
+     * @return "round_ended_at:{roundNo}"
+     */
+    public static String gameSessionRoundEndedAtField(int roundNo) {
+        return "round_ended_at:" + roundNo;
+    }
+
+    /**
+     * 특정 라운드에서 정답을 맞춘 유저들의 제출 시각을 저장하는 Hash 키를 반환합니다.
+     *
+     * @param lobbyCode 로비 초대 코드
+     * @param roundNo 라운드 번호
+     * @return "game:session:{lobbyCode}:round:{roundNo}:correct_times"
+     */
+    public static String gameSessionRoundCorrectTimesKey(String lobbyCode, int roundNo) {
+        return GAME_SESSION_PREFIX + lobbyCode + ":round:" + roundNo + ":correct_times";
+    }
+
+    /**
+     * 특정 라운드의 종료 중복 방지 락 키를 반환합니다.
+     *
+     * @param lobbyCode 로비 초대 코드
+     * @param roundNo 라운드 번호
+     * @return "game:session:{lobbyCode}:round:{roundNo}:ended_lock"
+     */
+    public static String gameSessionRoundEndedLockKey(String lobbyCode, int roundNo) {
+        return GAME_SESSION_PREFIX + lobbyCode + ":round:" + roundNo + ":ended_lock";
+    }
+
+    /**
+     * 특정 라운드 시작 중복 방지 락 키를 반환합니다.
+     *
+     * @param lobbyCode 로비 초대 코드
+     * @param roundNo 라운드 번호
+     * @return "game:session:{lobbyCode}:round:{roundNo}:next_lock"
+     */
+    public static String gameSessionNextRoundLockKey(String lobbyCode, int roundNo) {
+        return GAME_SESSION_PREFIX + lobbyCode + ":round:" + roundNo + ":next_lock";
     }
 }

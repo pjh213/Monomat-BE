@@ -3,6 +3,7 @@ package io.github.ascrew.monomatbe.domain.lobby.repository;
 import io.github.ascrew.monomatbe.domain.lobby.KickLobbyResult;
 import io.github.ascrew.monomatbe.domain.lobby.LeaveLobbyResult;
 import io.github.ascrew.monomatbe.domain.lobby.LobbyMapCompensationResult;
+import io.github.ascrew.monomatbe.domain.lobby.LobbyUserAccessStatus;
 import io.github.ascrew.monomatbe.domain.lobby.StartLobbyResult;
 import io.github.ascrew.monomatbe.domain.lobby.dto.CreateLobbyRequest;
 import io.github.ascrew.monomatbe.domain.lobby.dto.JoinLobbyResponse;
@@ -76,6 +77,16 @@ public class LobbyRepositoryImpl implements LobbyRepository {
   @Override
   public boolean isParticipant(String code, String userId) {
     return lobbyRedisQueryRepository.isParticipant(code, userId);
+  }
+
+  @Override
+  public boolean isKicked(String code, String userIdentifier) {
+    return lobbyRedisQueryRepository.isKicked(code, userIdentifier);
+  }
+
+  @Override
+  public LobbyUserAccessStatus getUserAccessStatus(String code, String userIdentifier) {
+    return lobbyRedisQueryRepository.getUserAccessStatus(code, userIdentifier);
   }
 
   @Override
@@ -163,16 +174,17 @@ public class LobbyRepositoryImpl implements LobbyRepository {
   }
 
   @Override
-  public void updateMapMetadata(String code, LobbyMapMetadata metadata) {
-    lobbyRedisCommandRepository.updateMapMetadata(code, metadata);
+  public void updateMapMetadata(String code, LobbyMapMetadata metadata, int questionCount) {
+    lobbyRedisCommandRepository.updateMapMetadata(code, metadata, questionCount);
   }
 
   @Override
   public LobbyMapCompensationResult compensateMapMetadataIfWaiting(
           String code,
-          LobbyMapMetadata oldMetadata
+          LobbyMapMetadata oldMetadata,
+          int oldQuestionCount
   ) {
-    String result = lobbyLuaScriptExecutor.executeCompensateLobbyMap(code, oldMetadata);
+    String result = lobbyLuaScriptExecutor.executeCompensateLobbyMap(code, oldMetadata, oldQuestionCount);
     return lobbyLuaResultMapper.toLobbyMapCompensationResult(result, code);
   }
 
@@ -184,7 +196,9 @@ public class LobbyRepositoryImpl implements LobbyRepository {
   public String saveToRedis(
           CreateLobbyRequest request,
           String userIdentifier,
-          LobbyMapMetadata mapMetadata
+          LobbyMapMetadata mapMetadata,
+          int effectiveQuestionCount,
+          int timeLimitSeconds
   ) {
     for (int attempt = 0; attempt < LobbyDefaults.INVITE_CODE_MAX_RETRY; attempt++) {
       String candidate = lobbyInviteCodeGenerator.generate();
@@ -193,7 +207,9 @@ public class LobbyRepositoryImpl implements LobbyRepository {
               candidate,
               request,
               userIdentifier,
-              mapMetadata
+              mapMetadata,
+              effectiveQuestionCount,
+              timeLimitSeconds
       );
 
       if (result == null) {

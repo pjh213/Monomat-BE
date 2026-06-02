@@ -2,6 +2,7 @@ package io.github.ascrew.monomatbe.domain.lobby.repository.redis;
 
 import io.github.ascrew.monomatbe.domain.lobby.dto.JoinLobbyResponse;
 import io.github.ascrew.monomatbe.domain.lobby.dto.LobbyRedisDto;
+import io.github.ascrew.monomatbe.domain.lobby.LobbyUserAccessStatus;
 import io.github.ascrew.monomatbe.domain.map.entity.MapCategory;
 import io.github.ascrew.monomatbe.global.constant.RedisKeys;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.ScanOptions;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.ZSetOperations;
 
 import java.nio.charset.StandardCharsets;
@@ -73,6 +75,76 @@ public class LobbyRedisQueryRepository {
         return Boolean.TRUE.equals(
                 redisTemplate.opsForSet().isMember(RedisKeys.lobbyParticipantsKey(code), userId)
         );
+    }
+
+    /**
+     * 해당 유저가 로비에서 강퇴된 유저인지 확인한다.
+     *
+     * [조회 기준]
+     * kick_lobby.lua는 강퇴된 사용자를 lobby:{code}:kicked Set에 저장한다.
+     * 로비 채팅 전송 시 이 Set을 확인하여 강퇴된 사용자의 메시지 전송을 차단한다.
+     *
+     * @param code 로비 초대 코드
+     * @param userIdentifier 사용자 식별자
+     * @return kicked Set 포함 여부
+     */
+    public boolean isKicked(String code, String userIdentifier) {
+        return Boolean.TRUE.equals(
+                redisTemplate.opsForSet().isMember(RedisKeys.lobbyKickedKey(code), userIdentifier)
+        );
+    }
+
+    /**
+     * 로비 사용자 접근 상태를 조회한다.
+     *
+     * [조회 전략]
+     * - lobby:{code} Hash 존재 여부
+     * - lobby:{code}:kicked Set 포함 여부
+     * - lobby:{code}:participants Set 포함 여부
+     *
+     * 위 세 명령을 Redis pipeline으로 묶어 네트워크 round-trip을 1회로 줄인다.
+     *
+     * @param code 로비 초대 코드
+     * @param userIdentifier 사용자 식별자
+     * @return 로비 사용자 접근 상태
+     */
+    public LobbyUserAccessStatus getUserAccessStatus(String code, String userIdentifier) {
+        String lobbyKey = RedisKeys.lobbyKey(code);
+        String kickedKey = RedisKeys.lobbyKickedKey(code);
+        String participantsKey = RedisKeys.lobbyParticipantsKey(code);
+
+        List<Object> results = redisTemplate.executePipelined((RedisCallback<Object>) connection -> {
+            connection.keyCommands().exists(rawKey(lobbyKey));
+            connection.setCommands().sIsMember(rawKey(kickedKey), rawKey(userIdentifier));
+            connection.setCommands().sIsMember(rawKey(participantsKey), rawKey(userIdentifier));
+            return null;
+        });
+
+        boolean lobbyExists = resultAsBoolean(results, 0);
+        boolean kicked = resultAsBoolean(results, 1);
+        boolean participant = resultAsBoolean(results, 2);
+
+        if (!lobbyExists) {
+            return LobbyUserAccessStatus.LOBBY_NOT_FOUND;
+        }
+
+        if (kicked) {
+            return LobbyUserAccessStatus.KICKED;
+        }
+
+        if (participant) {
+            return LobbyUserAccessStatus.PARTICIPANT;
+        }
+
+        return LobbyUserAccessStatus.NOT_PARTICIPANT;
+    }
+
+    private boolean resultAsBoolean(List<Object> results, int index) {
+        if (results == null || results.size() <= index) {
+            return false;
+        }
+
+        return Boolean.TRUE.equals(results.get(index));
     }
 
     /**
@@ -639,6 +711,8 @@ public class LobbyRedisQueryRepository {
                         inviteCode,
                         (String) data.get(RedisKeys.FIELD_MAP_CATEGORY)
                 ))
+                .questionCount(parseNullableInt(data.get(RedisKeys.FIELD_QUESTION_COUNT)))
+                .timeLimitSeconds(parseNullableInt(data.get(RedisKeys.FIELD_TIME_LIMIT_SECONDS)))
                 .build());
     }
 

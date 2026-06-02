@@ -21,6 +21,9 @@ import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
+import io.github.ascrew.monomatbe.domain.map.support.AnswerNormalizer;
 
 import java.util.Collections;
 import java.util.List;
@@ -46,6 +49,7 @@ public class GameSessionCreateService {
     private final GameParticipantResolver gameParticipantResolver;
     private final StringRedisTemplate redisTemplate;
     private final RedisScript<String> initGameSessionScript;
+    private final JsonMapper jsonMapper;
 
     /**
      * 로비 게임 시작 시 호출되어 게임 세션을 초기화한다.
@@ -58,23 +62,32 @@ public class GameSessionCreateService {
         List<MapItem> mapItems = mapItemJpaRepository.findAllByMapIdAndIsDeletedFalseOrderByOrderNumAsc(map.getId());
         Collections.shuffle(mapItems);
         List<MapItem> selectedItems = mapItems.stream()
-                .limit(lobby.getRoundCount())
+                .limit(lobby.getQuestionCount())
                 .toList();
 
-        if (selectedItems.size() < lobby.getRoundCount()) {
-            throw new io.github.ascrew.monomatbe.domain.game.exception.NotEnoughMapItemsException("출제 가능한 문제 수가 라운드 수보다 적습니다.");
+        if (selectedItems.size() < lobby.getQuestionCount()) {
+            throw new io.github.ascrew.monomatbe.domain.game.exception.NotEnoughMapItemsException("출제 가능한 문제 수가 설정된 문제 갯수보다 적습니다.");
         }
 
         long serverStartedAt = System.currentTimeMillis();
         java.time.LocalDateTime startedAt = java.time.LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(serverStartedAt), java.time.ZoneId.systemDefault());
+
+        // 0. 기존 미종료 활성 세션 정리 (정체 방지)
+        gameSessionJpaRepository.findActiveSessionByLobbyCode(code)
+                .ifPresent(oldSession -> {
+                    log.warn("미종료된 이전 게임 세션 발견 - 강제 FINISHED 처리. code: {}, oldSessionId: {}", code, oldSession.getId());
+                    oldSession.finish();
+                    gameSessionJpaRepository.save(oldSession);
+                });
 
         // 2. DB 세션 생성
         GameSession gameSession = GameSession.builder()
                 .lobby(lobby)
                 .map(map)
                 .currentRoundNo(1)
-                .totalRoundCount(lobby.getRoundCount())
+                .totalQuestionCount(lobby.getQuestionCount())
                 .startedAt(startedAt)
+                .status(io.github.ascrew.monomatbe.domain.game.entity.GameSessionStatus.PLAYING)
                 .build();
         gameSessionJpaRepository.save(gameSession);
 
@@ -108,7 +121,7 @@ public class GameSessionCreateService {
         String result = redisTemplate.execute(
                 initGameSessionScript,
                 List.of(sessionKey, roundsKey, playersKey),
-                String.valueOf(lobby.getRoundCount()),
+                String.valueOf(lobby.getQuestionCount()),
                 mapItemIdsStr,
                 participantsStr,
                 String.valueOf(lobby.getTimeLimitSeconds()),
@@ -123,8 +136,35 @@ public class GameSessionCreateService {
             throw new IllegalStateException("게임 세션 Redis 초기화 실패: " + result);
         }
 
-        log.info("게임 세션 생성 완료 - 로비 코드: {}, 라운드 수: {}, 참여자 수: {}", 
-                 code, lobby.getRoundCount(), participantIdentifiers.size());
+        // 4-1. 라운드별 문제 데이터 Redis 캐싱
+        for (int i = 0; i < selectedItems.size(); i++) {
+            MapItem item = selectedItems.get(i);
+            int roundNo = i + 1;
+            String roundDataKey = RedisKeys.gameSessionRoundDataKey(code, roundNo);
+            java.util.Map<String, String> roundData = new java.util.HashMap<>();
+            roundData.put("answers", item.getAnswers());
+            
+            // 정규화된 정답 목록 캐싱 추가
+            try {
+                List<String> rawAnswers = jsonMapper.readValue(item.getAnswers(), new TypeReference<List<String>>() {});
+                List<String> normalizedAnswers = rawAnswers.stream()
+                        .map(AnswerNormalizer::normalize)
+                        .filter(s -> !s.isEmpty())
+                        .collect(Collectors.toList());
+                roundData.put("normalized_answers", jsonMapper.writeValueAsString(normalizedAnswers));
+            } catch (Exception e) {
+                log.error("createGameSession: 정답 데이터 정규화 캐싱 실패 - item id: {}", item.getId(), e);
+                roundData.put("normalized_answers", "[]");
+            }
+
+            roundData.put("title", item.getTitle() == null ? "" : item.getTitle());
+            roundData.put("artist", item.getArtist() == null ? "" : item.getArtist());
+            redisTemplate.opsForHash().putAll(roundDataKey, roundData);
+            redisTemplate.expire(roundDataKey, java.time.Duration.ofSeconds(7200));
+        }
+
+        log.info("게임 세션 생성 완료 - 로비 코드: {}, 문제 갯수: {}, 참여자 수: {}",
+                 code, lobby.getQuestionCount(), participantIdentifiers.size());
 
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
@@ -132,17 +172,22 @@ public class GameSessionCreateService {
                 if (status == STATUS_ROLLED_BACK) {
                     log.warn("DB 트랜잭션 롤백 감지 - Redis 세션 잔여 데이터 정리. code: {}", code);
                     redisTemplate.delete(List.of(sessionKey, roundsKey, playersKey));
+                    for (int i = 1; i <= lobby.getQuestionCount(); i++) {
+                        redisTemplate.delete(RedisKeys.gameSessionRoundDataKey(code, i));
+                        redisTemplate.delete(RedisKeys.gameSessionRoundCorrectPlayersKey(code, i));
+                    }
                 }
             }
         });
 
         MapItem firstItem = selectedItems.get(0);
+        int effectiveEndTime = firstItem.getStartTime() + lobby.getTimeLimitSeconds();
         return RoundStartDto.builder()
                 .type("ROUND_READY")
                 .videoId(firstItem.getVideoId())
                 .youtubeUrl(firstItem.getYoutubeUrl())
                 .startTime(firstItem.getStartTime())
-                .endTime(firstItem.getEndTime())
+                .endTime(effectiveEndTime)
                 .timeLimitSeconds(lobby.getTimeLimitSeconds())
                 .roundNo(1)
                 .serverStartedAt(serverStartedAt)

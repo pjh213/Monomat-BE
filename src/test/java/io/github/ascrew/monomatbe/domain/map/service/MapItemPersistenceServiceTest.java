@@ -23,6 +23,8 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -63,14 +65,14 @@ class MapItemPersistenceServiceTest {
     @Test
     void create_orderDuplicated_conflict() {
         QuizMap quizMap = quizMap(1L, owner(10L));
-        when(quizMapJpaRepository.findByIdAndIsDeletedFalse(1L)).thenReturn(Optional.of(quizMap));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
         when(mapItemJpaRepository.existsByMapIdAndOrderNumAndIsDeletedFalse(1L, 1)).thenReturn(true);
 
         CreateMapItemRequest request = createRequest(1);
         YoutubeMetadata metadata = new YoutubeMetadata("v", "t", "a", "th");
 
         assertThatThrownBy(() -> persistenceService.create(
-                1L, 10L, request, metadata, "정답", "[]", "ㅈㄷ", 15
+                1L, 10L, request, metadata, "[\"정답\"]", "ㅈㄷ", 15
         ))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("이미 사용 중인 문제 순서입니다.");
@@ -81,7 +83,7 @@ class MapItemPersistenceServiceTest {
     @Test
     void create_success_recalculatesMetadata() {
         QuizMap quizMap = quizMap(1L, owner(10L));
-        when(quizMapJpaRepository.findByIdAndIsDeletedFalse(1L)).thenReturn(Optional.of(quizMap));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
         when(mapItemJpaRepository.existsByMapIdAndOrderNumAndIsDeletedFalse(1L, 1)).thenReturn(false);
         when(mapItemJpaRepository.save(any(MapItem.class))).thenAnswer(invocation -> {
             MapItem input = invocation.getArgument(0);
@@ -96,8 +98,7 @@ class MapItemPersistenceServiceTest {
                     .title(input.getTitle())
                     .artist(input.getArtist())
                     .thumbnailUrl(input.getThumbnailUrl())
-                    .answer(input.getAnswer())
-                    .altAnswers(input.getAltAnswers())
+                    .answers(input.getAnswers())
                     .hint(input.getHint())
                     .hintTime(input.getHintTime())
                     .build();
@@ -109,7 +110,7 @@ class MapItemPersistenceServiceTest {
         YoutubeMetadata metadata = new YoutubeMetadata("v", "t", "a", "th");
 
         MapItem saved = persistenceService.create(
-                1L, 10L, request, metadata, "정답", "[]", "ㅈㄷ", 15
+                1L, 10L, request, metadata, "[\"정답\"]", "ㅈㄷ", 15
         );
 
         assertThat(saved.getId()).isEqualTo(100L);
@@ -121,7 +122,7 @@ class MapItemPersistenceServiceTest {
     @Test
     void delete_success_softDeletesAndRecalculatesMetadata() {
         QuizMap quizMap = quizMap(1L, owner(10L));
-        when(quizMapJpaRepository.findByIdAndIsDeletedFalse(1L)).thenReturn(Optional.of(quizMap));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
 
         MapItem mapItem = MapItem.builder()
                 .id(50L)
@@ -134,8 +135,7 @@ class MapItemPersistenceServiceTest {
                 .title("t")
                 .artist("a")
                 .thumbnailUrl("th")
-                .answer("정답")
-                .altAnswers(null)
+                .answers("[\"정답\"]")
                 .hint("ㅈㄷ")
                 .hintTime(15)
                 .isDeleted(false)
@@ -156,7 +156,7 @@ class MapItemPersistenceServiceTest {
         QuizMap quizMap = quizMap(1L, owner(10L));
         quizMap.setPendingPublicIntent(true);
 
-        when(quizMapJpaRepository.findByIdAndIsDeletedFalse(1L)).thenReturn(Optional.of(quizMap));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
         when(mapItemJpaRepository.existsByMapIdAndOrderNumAndIsDeletedFalse(1L, 1)).thenReturn(false);
         when(mapItemJpaRepository.save(any(MapItem.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(mapItemJpaRepository.countByMapIdAndIsDeletedFalse(1L)).thenReturn(1L);
@@ -166,7 +166,7 @@ class MapItemPersistenceServiceTest {
         persistenceService.create(
                 1L, 10L, createRequest(1),
                 new YoutubeMetadata("v", "t", "a", "th"),
-                "정답", "[]", "ㅈㄷ", 15
+                "[\"정답\"]", "ㅈㄷ", 15
         );
 
         assertThat(quizMap.getIsPublic()).isTrue();
@@ -178,7 +178,7 @@ class MapItemPersistenceServiceTest {
         QuizMap quizMap = quizMap(1L, owner(10L));
         quizMap.setPendingPublicIntent(true);
 
-        when(quizMapJpaRepository.findByIdAndIsDeletedFalse(1L)).thenReturn(Optional.of(quizMap));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
         when(mapItemJpaRepository.existsByMapIdAndOrderNumAndIsDeletedFalse(1L, 1)).thenReturn(false);
         when(mapItemJpaRepository.save(any(MapItem.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(mapItemJpaRepository.countByMapIdAndIsDeletedFalse(1L)).thenReturn(1L);
@@ -188,7 +188,7 @@ class MapItemPersistenceServiceTest {
         persistenceService.create(
                 1L, 10L, createRequest(1),
                 new YoutubeMetadata("v", "t", "a", "th"),
-                "정답", "[]", "ㅈㄷ", 15
+                "[\"정답\"]", "ㅈㄷ", 15
         );
 
         assertThat(quizMap.getIsPublic()).isFalse();
@@ -199,7 +199,7 @@ class MapItemPersistenceServiceTest {
     void delete_lastItemFromPublicMap_autoFlipToPrivate_keepsPendingTrue() {
         QuizMap quizMap = quizMap(1L, owner(10L));
         quizMap.markAsPublished(); // 공개 상태
-        when(quizMapJpaRepository.findByIdAndIsDeletedFalse(1L)).thenReturn(Optional.of(quizMap));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
 
         MapItem mapItem = MapItem.builder()
                 .id(50L)
@@ -212,8 +212,7 @@ class MapItemPersistenceServiceTest {
                 .title("t")
                 .artist("a")
                 .thumbnailUrl("th")
-                .answer("정답")
-                .altAnswers(null)
+                .answers("[\"정답\"]")
                 .hint("ㅈㄷ")
                 .hintTime(15)
                 .isDeleted(false)
@@ -233,7 +232,7 @@ class MapItemPersistenceServiceTest {
     void delete_nonLastItemFromPublicMap_remainsPublic() {
         QuizMap quizMap = quizMap(1L, owner(10L));
         quizMap.markAsPublished();
-        when(quizMapJpaRepository.findByIdAndIsDeletedFalse(1L)).thenReturn(Optional.of(quizMap));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
 
         MapItem mapItem = MapItem.builder()
                 .id(51L)
@@ -246,8 +245,7 @@ class MapItemPersistenceServiceTest {
                 .title("t")
                 .artist("a")
                 .thumbnailUrl("th")
-                .answer("정답")
-                .altAnswers(null)
+                .answers("[\"정답\"]")
                 .hint("ㅈㄷ")
                 .hintTime(15)
                 .isDeleted(false)
@@ -269,7 +267,7 @@ class MapItemPersistenceServiceTest {
         // (데이터 오염, 수동 DB 수정, 향후 부분 수정 API 도입 등으로 공개 맵이 무효 상태에 놓이는 케이스)
         QuizMap quizMap = quizMap(1L, owner(10L));
         quizMap.markAsPublished();
-        when(quizMapJpaRepository.findByIdAndIsDeletedFalse(1L)).thenReturn(Optional.of(quizMap));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
 
         MapItem mapItem = MapItem.builder()
                 .id(60L)
@@ -282,8 +280,7 @@ class MapItemPersistenceServiceTest {
                 .title("t")
                 .artist("a")
                 .thumbnailUrl("th")
-                .answer("정답")
-                .altAnswers(null)
+                .answers("[\"정답\"]")
                 .hint("ㅈㄷ")
                 .hintTime(15)
                 .isDeleted(false)
@@ -300,15 +297,123 @@ class MapItemPersistenceServiceTest {
         assertThat(quizMap.getPendingPublic()).isTrue();
     }
 
+    @Test
+    void reorder_success_assignsOrderNumsByRequestSequence() {
+        QuizMap quizMap = quizMap(1L, owner(10L));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
+
+        MapItem item1 = mapItem(1L, quizMap, 1);
+        MapItem item2 = mapItem(2L, quizMap, 2);
+        MapItem item3 = mapItem(3L, quizMap, 3);
+        when(mapItemJpaRepository.findAllByMapIdAndIsDeletedFalseOrderByOrderNumAsc(1L))
+                .thenReturn(List.of(item1, item2, item3))
+                .thenReturn(List.of(item1, item2, item3));
+
+        // [3, 1, 2] 순서로 재정렬 요청
+        persistenceService.reorder(1L, 10L, List.of(3L, 1L, 2L));
+
+        verify(mapItemJpaRepository).setTemporaryOrderNums(eq(1L));
+        assertThat(item3.getOrderNum()).isEqualTo(1);
+        assertThat(item1.getOrderNum()).isEqualTo(2);
+        assertThat(item2.getOrderNum()).isEqualTo(3);
+    }
+
+
+    @Test
+    void reorder_notOwner_forbidden() {
+        QuizMap quizMap = quizMap(1L, owner(10L));
+        // 비소유자(99L) 락 조회는 빈 결과 → 맵 자체는 존재하므로 FORBIDDEN으로 분기되어야 한다.
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 99L)).thenReturn(Optional.empty());
+        when(quizMapJpaRepository.findByIdAndIsDeletedFalse(1L)).thenReturn(Optional.of(quizMap));
+
+        assertThatThrownBy(() -> persistenceService.reorder(1L, 99L, List.of(1L, 2L)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("본인 소유의 맵만 문제를 관리할 수 있습니다.");
+
+        verify(mapItemJpaRepository, never()).setTemporaryOrderNums(any());
+    }
+
+    @Test
+    void reorder_duplicateItemId_badRequest() {
+        QuizMap quizMap = quizMap(1L, owner(10L));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
+
+        MapItem item1 = mapItem(1L, quizMap, 1);
+        MapItem item2 = mapItem(2L, quizMap, 2);
+        when(mapItemJpaRepository.findAllByMapIdAndIsDeletedFalseOrderByOrderNumAsc(1L))
+                .thenReturn(List.of(item1, item2));
+
+        assertThatThrownBy(() -> persistenceService.reorder(1L, 10L, List.of(1L, 1L)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("중복된 문제 ID가 있습니다.");
+
+        verify(mapItemJpaRepository, never()).setTemporaryOrderNums(any());
+    }
+
+    @Test
+    void reorder_missingItem_badRequest() {
+        QuizMap quizMap = quizMap(1L, owner(10L));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
+
+        MapItem item1 = mapItem(1L, quizMap, 1);
+        MapItem item2 = mapItem(2L, quizMap, 2);
+        MapItem item3 = mapItem(3L, quizMap, 3);
+        when(mapItemJpaRepository.findAllByMapIdAndIsDeletedFalseOrderByOrderNumAsc(1L))
+                .thenReturn(List.of(item1, item2, item3));
+
+        // item3 누락
+        assertThatThrownBy(() -> persistenceService.reorder(1L, 10L, List.of(1L, 2L)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("모든 문제의 순서를 지정해야 합니다.");
+
+        verify(mapItemJpaRepository, never()).setTemporaryOrderNums(any());
+    }
+
+    @Test
+    void reorder_invalidItemId_badRequest() {
+        QuizMap quizMap = quizMap(1L, owner(10L));
+        when(quizMapJpaRepository.findOwnedByIdAndIsDeletedFalseForUpdate(1L, 10L)).thenReturn(Optional.of(quizMap));
+
+        MapItem item1 = mapItem(1L, quizMap, 1);
+        MapItem item2 = mapItem(2L, quizMap, 2);
+        when(mapItemJpaRepository.findAllByMapIdAndIsDeletedFalseOrderByOrderNumAsc(1L))
+                .thenReturn(List.of(item1, item2));
+
+        // 999L은 이 맵에 속하지 않는 ID
+        assertThatThrownBy(() -> persistenceService.reorder(1L, 10L, List.of(1L, 999L)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("유효하지 않은 문제 ID가 포함되어 있습니다.");
+
+        verify(mapItemJpaRepository, never()).setTemporaryOrderNums(any());
+    }
+
+    private MapItem mapItem(Long id, QuizMap quizMap, int orderNum) {
+        return MapItem.builder()
+                .id(id)
+                .map(quizMap)
+                .orderNum(orderNum)
+                .youtubeUrl("u")
+                .videoId("v")
+                .startTime(0)
+                .endTime(30)
+                .title("t")
+                .artist("a")
+                .thumbnailUrl("th")
+                .answers("[\"정답\"]")
+                .hint("ㅈㄷ")
+                .hintTime(15)
+                .isDeleted(false)
+                .build();
+    }
+
     private CreateMapItemRequest createRequest(int orderNum) {
         return new CreateMapItemRequest(
                 orderNum,
                 "https://www.youtube.com/watch?v=abcde123456",
                 10,
                 40,
-                "정답",
-                List.of(),
-                null,
+                List.of("정답"),
+                "힌트",
                 null
         );
     }

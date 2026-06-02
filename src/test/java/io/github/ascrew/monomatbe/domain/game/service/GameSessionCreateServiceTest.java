@@ -22,9 +22,11 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
@@ -54,6 +56,10 @@ class GameSessionCreateServiceTest {
     private StringRedisTemplate redisTemplate;
     @Mock
     private RedisScript<String> initGameSessionScript;
+    @Mock
+    private HashOperations<String, Object, Object> hashOperations;
+    @Mock
+    private JsonMapper jsonMapper;
 
     @InjectMocks
     private GameSessionCreateService gameSessionCreateService;
@@ -75,7 +81,7 @@ class GameSessionCreateServiceTest {
         GameLobby lobby = GameLobby.builder()
                 .inviteCode("ABC1234")
                 .mapId(1L)
-                .roundCount(1)
+                .questionCount(1)
                 .timeLimitSeconds(30)
                 .status(LobbyStatus.PLAYING)
                 .build();
@@ -91,7 +97,7 @@ class GameSessionCreateServiceTest {
                 .endTime(20)
                 .title("Secret Title")
                 .artist("Secret Artist")
-                .answer("정답")
+                .answers("[\"정답\"]")
                 .hint("힌트")
                 .build();
 
@@ -104,6 +110,15 @@ class GameSessionCreateServiceTest {
         when(gameParticipantResolver.resolveUsers(List.of("uId")))
                 .thenReturn(List.of(user));
         
+        try {
+            when(jsonMapper.readValue(eq("[\"정답\"]"), any(tools.jackson.core.type.TypeReference.class)))
+                    .thenReturn(List.of("정답"));
+            when(jsonMapper.writeValueAsString(any()))
+                    .thenReturn("[\"정답\"]");
+        } catch (Exception e) {
+            // ignore for mock
+        }
+        
         when(redisTemplate.execute(
                 eq(initGameSessionScript),
                 any(List.class),
@@ -114,6 +129,7 @@ class GameSessionCreateServiceTest {
                 anyString(),
                 anyString()
         )).thenReturn("OK");
+        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
 
         // when
         RoundStartDto result = gameSessionCreateService.createGameSession(lobby, quizMap);
@@ -124,7 +140,7 @@ class GameSessionCreateServiceTest {
         verify(gameSessionJpaRepository).save(sessionCaptor.capture());
         GameSession savedSession = sessionCaptor.getValue();
         assertThat(savedSession.getCurrentRoundNo()).isEqualTo(1);
-        assertThat(savedSession.getTotalRoundCount()).isEqualTo(1);
+        assertThat(savedSession.getTotalQuestionCount()).isEqualTo(1);
 
         // 2. DB Player 생성 확인
         ArgumentCaptor<List<GameSessionPlayer>> playersCaptor = ArgumentCaptor.forClass(List.class);
@@ -138,7 +154,7 @@ class GameSessionCreateServiceTest {
         assertThat(result.videoId()).isEqualTo("vId");
         assertThat(result.youtubeUrl()).isEqualTo("https://youtube.com/vId");
         assertThat(result.startTime()).isEqualTo(10);
-        assertThat(result.endTime()).isEqualTo(20);
+        assertThat(result.endTime()).isEqualTo(40); // startTime(10) + timeLimitSeconds(30)
         assertThat(result.timeLimitSeconds()).isEqualTo(30);
         assertThat(result.roundNo()).isEqualTo(1);
         assertThat(result.serverStartedAt()).isGreaterThan(0L);
@@ -153,7 +169,7 @@ class GameSessionCreateServiceTest {
         GameLobby lobby = GameLobby.builder()
                 .inviteCode("ABC1234")
                 .mapId(1L)
-                .roundCount(1)
+                .questionCount(1)
                 .timeLimitSeconds(30)
                 .status(LobbyStatus.PLAYING)
                 .build();
