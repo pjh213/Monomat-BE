@@ -7,11 +7,13 @@ import lombok.Builder;
 public record MapSummaryResponse(
         Long mapId,
         String title,
+        String description,
         MapCategory category,
         int numOfSong,
         int totalPlayTime,
         boolean isPublic,
         boolean pendingPublic,
-        Long ownerId
+        Long ownerId,
+        String ownerNickname
 ) {
 }

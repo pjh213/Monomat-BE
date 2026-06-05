@@ -5,6 +5,7 @@ import io.github.ascrew.monomatbe.domain.auth.entity.UserStatus;
 import io.github.ascrew.monomatbe.domain.auth.entity.UserType;
 import io.github.ascrew.monomatbe.domain.auth.repository.UserRepository;
 import io.github.ascrew.monomatbe.domain.map.dto.CreateMapRequest;
+import io.github.ascrew.monomatbe.domain.map.dto.MapDetailResponse;
 import io.github.ascrew.monomatbe.domain.map.dto.UpdateMapRequest;
 import io.github.ascrew.monomatbe.domain.map.entity.MapCategory;
 import io.github.ascrew.monomatbe.domain.map.entity.QuizMap;
@@ -15,12 +16,16 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -110,6 +115,7 @@ class MapServiceTest {
 
         assertThat(response.id()).isEqualTo(300L);
         assertThat(response.ownerId()).isEqualTo(10L);
+        assertThat(response.ownerNickname()).isEqualTo("owner");
         assertThat(response.title()).isEqualTo("new map");
         // 생성 시 아이템이 0이므로 공개 의도는 pendingPublic 으로 보존되고 isPublic 은 false 로 저장된다.
         assertThat(response.isPublic()).isFalse();
@@ -354,5 +360,169 @@ class MapServiceTest {
         verify(publicationValidator, never()).requirePublishable(any());
         assertThat(response.title()).isEqualTo("fixed title");
         assertThat(response.isPublic()).isTrue();
+    }
+
+    @Test
+    void getMyMaps_includesDescriptionInSummary() {
+        User owner = User.builder()
+                .id(10L)
+                .username("owner")
+                .userType(UserType.REGISTERED)
+                .status(UserStatus.ACTIVE)
+                .build();
+
+        QuizMap quizMap = QuizMap.builder()
+                .id(100L)
+                .owner(owner)
+                .title("내 맵")
+                .description("내 맵 설명")
+                .category(MapCategory.KPOP)
+                .numOfSong(3)
+                .totalPlayTime(600)
+                .isPublic(false)
+                .pendingPublic(false)
+                .build();
+
+        when(quizMapJpaRepository.findAll(any(Specification.class), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(quizMap)));
+
+        CustomPrincipal principal = new CustomPrincipal(10L, "u-10", UserType.REGISTERED);
+
+        var response = mapService.getMyMaps(0, 20, principal);
+
+        assertThat(response.content()).hasSize(1);
+        assertThat(response.content().get(0).mapId()).isEqualTo(100L);
+        assertThat(response.content().get(0).description()).isEqualTo("내 맵 설명");
+        assertThat(response.content().get(0).ownerId()).isEqualTo(10L);
+        assertThat(response.content().get(0).ownerNickname()).isEqualTo("owner");
+    }
+
+    @Test
+    void getMyMaps_nullDescription_returnedAsNull() {
+        User owner = User.builder()
+                .id(10L)
+                .username("owner")
+                .userType(UserType.REGISTERED)
+                .status(UserStatus.ACTIVE)
+                .build();
+
+        QuizMap quizMap = QuizMap.builder()
+                .id(101L)
+                .owner(owner)
+                .title("설명 없는 맵")
+                .description(null)
+                .category(MapCategory.KPOP)
+                .numOfSong(0)
+                .totalPlayTime(0)
+                .isPublic(false)
+                .pendingPublic(false)
+                .build();
+
+        when(quizMapJpaRepository.findAll(any(Specification.class), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(quizMap)));
+
+        CustomPrincipal principal = new CustomPrincipal(10L, "u-10", UserType.REGISTERED);
+
+        var response = mapService.getMyMaps(0, 20, principal);
+
+        assertThat(response.content()).hasSize(1);
+        assertThat(response.content().get(0).description()).isNull();
+        assertThat(response.content().get(0).ownerId()).isEqualTo(10L);
+        assertThat(response.content().get(0).ownerNickname()).isEqualTo("owner");
+    }
+
+    @Test
+    void getPublicMaps_includesDescriptionInSummary() {
+        User owner = User.builder()
+                .id(10L)
+                .username("owner")
+                .userType(UserType.REGISTERED)
+                .status(UserStatus.ACTIVE)
+                .build();
+
+        QuizMap quizMap = QuizMap.builder()
+                .id(200L)
+                .owner(owner)
+                .title("공개 맵")
+                .description("공개 맵 설명")
+                .category(MapCategory.KPOP)
+                .numOfSong(5)
+                .totalPlayTime(900)
+                .isPublic(true)
+                .pendingPublic(false)
+                .build();
+
+        when(quizMapJpaRepository.findAll(any(Specification.class), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(quizMap)));
+
+        // keyword 를 넘기면 캐시를 우회하고 DB 조회 경로를 그대로 검증할 수 있다.
+        var response = mapService.getPublicMaps(0, 20, "공개", null, null);
+
+        assertThat(response.content()).hasSize(1);
+        assertThat(response.content().get(0).mapId()).isEqualTo(200L);
+        assertThat(response.content().get(0).description()).isEqualTo("공개 맵 설명");
+        assertThat(response.content().get(0).ownerId()).isEqualTo(10L);
+        assertThat(response.content().get(0).ownerNickname()).isEqualTo("owner");
+    }
+
+    @Test
+    void getPublicMap_includesOwnerNicknameInDetail() {
+        User owner = User.builder()
+                .id(10L)
+                .username("owner")
+                .userType(UserType.REGISTERED)
+                .status(UserStatus.ACTIVE)
+                .build();
+
+        QuizMap quizMap = QuizMap.builder()
+                .id(300L)
+                .owner(owner)
+                .title("상세 맵")
+                .description("상세 맵 설명")
+                .category(MapCategory.KPOP)
+                .numOfSong(5)
+                .totalPlayTime(900)
+                .isPublic(true)
+                .pendingPublic(false)
+                .build();
+
+        when(valueOperations.get(any(String.class))).thenReturn(null);
+        when(quizMapJpaRepository.findByIdAndIsDeletedFalseAndIsPublicTrue(300L))
+                .thenReturn(Optional.of(quizMap));
+
+        var response = mapService.getPublicMap(300L);
+
+        assertThat(response.id()).isEqualTo(300L);
+        assertThat(response.ownerId()).isEqualTo(10L);
+        assertThat(response.ownerNickname()).isEqualTo("owner");
+        assertThat(response.title()).isEqualTo("상세 맵");
+    }
+    
+    @Test
+    void getPublicMap_cacheHit_returnsOwnerNickname() {
+        MapDetailResponse cachedResponse = MapDetailResponse.builder()
+                .id(300L)
+                .ownerId(10L)
+                .ownerNickname("owner")
+                .title("상세 맵")
+                .description("상세 맵 설명")
+                .category(MapCategory.KPOP)
+                .numOfSong(5)
+                .totalPlayTime(900)
+                .isPublic(true)
+                .pendingPublic(false)
+                .build();
+
+        when(valueOperations.get(any(String.class))).thenReturn("{}");
+        when(jsonMapper.readValue("{}", MapDetailResponse.class)).thenReturn(cachedResponse);
+
+        var response = mapService.getPublicMap(300L);
+
+        assertThat(response.id()).isEqualTo(300L);
+        assertThat(response.ownerId()).isEqualTo(10L);
+        assertThat(response.ownerNickname()).isEqualTo("owner");
+        assertThat(response.title()).isEqualTo("상세 맵");
+
+        verify(quizMapJpaRepository, never()).findByIdAndIsDeletedFalseAndIsPublicTrue(any());
     }
 }

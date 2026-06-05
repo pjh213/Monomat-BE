@@ -1105,3 +1105,79 @@ FE는 STOMP ERROR의 `message`를 파싱하지 않습니다.
 - **랭킹 및 가점 연출**: `rankings` 리스트 내부의 각 객체는 `PlayerRankingDto` 타입으로, 플레이어의 현재 총점(`score`), 순위(`rank`), 그리고 해당 라운드에서 획득한 가점(`scoreAdded` - 1등 140점, 그 외 정답자 100점, 오답자 0점)을 가지고 있습니다. FE는 `scoreAdded`를 활용하여 "+140" 등 가점 애니메이션을 UI상에 연출하고 랭킹 리스트를 갱신합니다.
 - **자동 전환**: 라운드가 종료된 후 10초간 결과 화면을 노출한 뒤, 서버에 의해 자동으로 다음 라운드가 준비 상태(`ROUND_READY`)로 넘어가게 되므로 FE는 이에 맞춰 인게임 화면으로 복귀하여 비디오 재생 준비 신호를 다시 송신해야 합니다. 마지막 라운드인 경우에는 로비 및 게임 상태가 `FINISHED`로 변경되며 결과화면으로 자동 전환됩니다.
 
+#### 4) FE 연동 핵심 계약 (시간 동기화, 의미 차이, 중복 수신 방지)
+- **ROUND_READY와 ROUND_PLAYBACK_STARTED의 의미 차이**:
+  - `ROUND_READY`: 새로운 라운드가 개시되어 문제(비디오) 로딩을 준비하라는 신호입니다. 비디오 메타데이터(`videoId`, `youtubeUrl` 등)를 전달하며, FE는 이 시점에 비디오 IFrame을 백그라운드에 로드하고 준비(`ready-to-play` 전송)를 마쳐야 하며, 전체 플레이어가 준비되기 전까지 비디오는 재생하지 않고 대기(정지/일시정지) 상태여야 합니다.
+  - `ROUND_PLAYBACK_STARTED`: 모든 참가자의 준비가 완료되었거나 대기 타임아웃(10초)이 경과하여 비디오 재생을 실제로 개시하라는 신호입니다. FE는 이 신호를 받은 즉시 비디오 재생을 시작하며, Clock Skew 보정된 시작 시각을 기준으로 재생 지점(`seekTo`)을 동기화합니다.
+- **중복 이벤트 수신 시 처리 기준**:
+  - 분산 환경 또는 일시적인 네트워크 재접속 과정에서 동일한 `ROUND_READY` 또는 `ROUND_PLAYBACK_STARTED` 이벤트가 중복 수신될 수 있습니다.
+  - FE는 각 이벤트의 `roundNo` 필드를 확인하여 **이미 처리 중이거나 완료된 라운드 번호의 이벤트는 멱등적으로 무시**해야 합니다.
+  - 특히 비디오 재생 개시(`ROUND_PLAYBACK_STARTED`)의 경우, 동일한 `roundNo`에 대해 이미 재생이 진행 중이라면 중복 재생 명령이나 `seekTo` 보정 연산을 수행하지 않아야 화면 끊김이나 비정상 상태를 방지할 수 있습니다.
+- **게임 종료 정책**:
+  - 게임의 최종 종료는 별도 `GAME_FINISHED` 이벤트를 발행하지 않고, 라운드 종료 결과 알림(`ROUND_END`) 내 `isLastRound=true`인 것을 기준으로 처리합니다. 
+  - FE는 `isLastRound=true` 조건이 들어오면 다음 라운드 준비를 하지 않고 최종 스코어보드 및 결과 연출 화면으로 전환합니다.
+
+#### 5) 인게임 재접속 및 현재 라운드 상태 복구 (핵심 계약)
+- **상태 조회 API**: 사용자가 일시적으로 네트워크 단절을 겪거나 브라우저를 새로고침(재접속)하여 게임 화면에 다시 접근하면, FE는 가장 먼저 `GET /api/game/{code}/round/current` API를 호출하여 현재 세션과 라운드의 정적/동적 상태 데이터를 획득해야 합니다.
+- **READY 단계 복구**:
+  - `status`가 `"WAITING"`이고 `roundPhase`가 `"READY"`인 경우, 동영상 재생 전 대기 상태입니다.
+  - FE는 `videoId`, `youtubeUrl`, `startTime`, `endTime`을 사용하여 유튜브 IFrame 플레이어에 비디오를 로드(`cueVideoById` 등)하지만, 재생은 시작하지 않고 일시정지/정지 상태로 둡니다.
+  - 비디오 로드가 완료되면 즉시 `SEND /app/game/{code}/ready-to-play`를 전송하여 대기 상태에 참가해야 합니다.
+- **PLAYING 단계 복구**:
+  - `status`가 `"PLAYING"`이고 `roundPhase`가 `"PLAYING"`인 경우, 이미 라운드 재생이 진행 중인 상태입니다.
+  - FE는 비디오 메타데이터를 로드한 뒤, 서버 실제 재생 시작 시각인 `serverStartedAt`과 클라이언트의 현재 시간을 비교(Clock Skew 보정 필수)하여 흘러간 재생 시간(`elapsedSeconds`)을 계산합니다.
+  - `targetSeekPosition = startTime + elapsedSeconds` 지점으로 비디오를 이동(`seekTo`)하고 재생(`playVideo`)하여 싱크를 복구합니다.
+  - `isCorrect` 필드가 `true`인 경우, 해당 유저가 이미 정답을 맞춘 상태이므로 입력 창을 비활성화하고 blind chat/blind 연출을 표시합니다.
+  - 남은 제한 시간(`remainingSeconds`) 필드를 활용해 UI 카운트다운을 복원합니다.
+- **ENDED 단계 복구**:
+  - `status`가 `"WAITING"`이고 `roundPhase`가 `"ENDED"`인 경우, 라운드 종료 후 결과화면 노출 중인 상태입니다.
+  - 비디오 관련 필드는 `null`이며, FE는 인게임 재생을 멈추고 랭킹 및 결과 화면 UI를 유지합니다. (이후 서버에서 자동으로 다음 라운드 시작 `ROUND_READY` 이벤트를 WebSocket으로 브로드캐스트하므로, 이에 따라 READY 단계로 이행해야 합니다.)
+- **FINISHED 단계 복구**:
+  - `status`가 `"FINISHED"`이고 `roundPhase`가 `"FINISHED"`인 경우, 전체 게임이 종료된 상태입니다.
+  - FE는 비디오를 멈추고 최종 결과 및 스코어보드 화면으로 전환합니다.
+
+## 게임 세션 Redis 키 정리 정책
+
+게임 세션 관련 Redis 키는 생성 시 **2시간(7200초) TTL**을 최종 안전망으로 가지며, 종료/폭파/롤백 시점에 명시적으로 정리한다.
+
+### 정리 대상 키 (`game:session:{code}*`)
+
+| 키 | 타입 | 설명 |
+| --- | --- | --- |
+| `game:session:{code}` | Hash | 세션 메타데이터 (current_round_no, total_question_count, status 등) |
+| `game:session:{code}:rounds` | List | 라운드별 MapItem ID |
+| `game:session:{code}:players` | Hash | 플레이어별 점수 |
+| `game:session:{code}:round:{n}:ready` | Set | 라운드 재생 준비 완료 유저 |
+| `game:session:{code}:round:{n}:playback_lock` | String | 재생 시작 중복 방지 락 |
+| `game:session:{code}:round:{n}:data` | Hash | 라운드 문제 데이터 캐시 |
+| `game:session:{code}:round:{n}:correct_players` | Set | 정답자 |
+| `game:session:{code}:round:{n}:correct_times` | Hash | 정답 제출 시각 |
+| `game:session:{code}:round:{n}:ended_lock` | String | 라운드 종료 중복 방지 락 |
+
+### 생명주기와 정리 트리거
+
+| 시점 | 정책 | 구현 |
+| --- | --- | --- |
+| 게임 생성 | 모든 키에 2시간 TTL 부여 | `init_game_session.lua`, `GameSessionCreateService` |
+| **게임 정상 종료** (마지막 라운드) | 모든 키를 **300초 짧은 TTL로 전환** (종료 직후 재조회 grace period) | `GameRoundEndService` afterCommit → `GameSessionCleanupService.expireWithGracePeriod()` |
+| **로비 폭파** (게임 중 전원 퇴장) | 모든 키 **즉시 삭제** | `LobbyLeaveEventHandler`(Destroyed) → `LobbyClosedEvent` → `GameSessionCleanupEventHandler` → `deleteNow()` |
+| **게임 시작 DB 롤백** | 모든 키 **즉시 삭제** (보상) | `GameSessionCreateService` afterCompletion(ROLLED_BACK) → `deleteNow()` |
+
+> 정상 종료 시 짧은 TTL을 쓰는 이유: 최종 점수/랭킹은 DB(`GameSessionPlayer`)에 영구 저장되므로 grace period 후 만료되어도 안전하며, 종료 직후 클라이언트 재조회 여유를 둔다.
+
+### 정리 메커니즘
+
+- `cleanup_game_session.lua` 단일 스크립트가 base 3종 + 라운드별 6종 키를 **원자적**으로 `DELETE` 또는 `EXPIRE`한다.
+- 라운드 수는 `total_question_count` 해시 필드(없으면 `:rounds` LLEN)로 판별하고, 모든 하위 키 이름을 `sessionKey`로부터 **결정적으로 조립**한다. → 운영 비용·블로킹 위험이 있는 `SCAN`/`KEYS` 패턴 매칭을 사용하지 않는다.
+- **전제: 단일(standalone) Redis.** 라운드별 키는 KEYS로 선언하지 않고 직접 접근하므로, Redis Cluster 도입 시 `{code}` hash-tag 적용이 필요하다.
+
+### 정리 실패 대응 (경량 reconciliation)
+
+모든 키가 2시간 TTL 안전망을 가지므로 정리 실패는 치명적이지 않다. `GameSessionCleanupService`는 정리 실패 시 예외를 전파하지 않고 다음만 수행한다.
+
+- `[MONITORING_REQUIRED]` 로그 기록
+- 실패 metric counter 증가 (`metric:game:session:cleanup:failed`)
+- 2시간 TTL 자동 만료에 의존 (별도 재처리 스케줄러를 두지 않음)
+
+성공 시 `metric:game:session:cleanup:success`를 증가시켜 정리 처리량을 관측한다.
+

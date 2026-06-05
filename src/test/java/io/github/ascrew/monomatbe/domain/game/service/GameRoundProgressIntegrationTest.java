@@ -22,6 +22,8 @@ import io.github.ascrew.monomatbe.domain.lobby.service.LobbyRealtimeNotifier;
 import io.github.ascrew.monomatbe.domain.map.entity.MapItem;
 import io.github.ascrew.monomatbe.domain.map.repository.MapItemJpaRepository;
 import io.github.ascrew.monomatbe.global.constant.RedisKeys;
+import io.github.ascrew.monomatbe.global.constant.GameEventTypes;
+import io.github.ascrew.monomatbe.global.constant.StompDestinations;
 import io.github.ascrew.monomatbe.global.websocket.dto.ChatMessageDto;
 import io.github.ascrew.monomatbe.global.websocket.event.PlayerLeaveEvent;
 import org.junit.jupiter.api.AfterEach;
@@ -261,8 +263,9 @@ class GameRoundProgressIntegrationTest {
 
         // then
         assertThat(gameSession.getStatus()).isEqualTo(GameSessionStatus.FINISHED);
+        // DB 상태 변경은 Dirty Checking으로 커밋 시 반영되므로 명시적 save 호출은 없다.
+        // (상태 전환 자체는 changeStatus 호출로 검증한다)
         verify(lobby).changeStatus(LobbyStatus.FINISHED);
-        verify(gameLobbyJpaRepository).save(lobby);
 
         assertThat(redisTemplate.opsForHash().get(RedisKeys.gameSessionKey(LOBBY_CODE), "status")).isEqualTo("FINISHED");
         assertThat(redisTemplate.opsForHash().get(RedisKeys.lobbyKey(LOBBY_CODE), "status")).isEqualTo("FINISHED");
@@ -291,7 +294,7 @@ class GameRoundProgressIntegrationTest {
         verify(gameRealtimeNotifier, times(1)).notifyRoundStart(eq(LOBBY_CODE), captor.capture());
         
         RoundStartDto captured = captor.getValue();
-        assertThat(captured.type()).isEqualTo("ROUND_READY");
+        assertThat(captured.type()).isEqualTo(GameEventTypes.ROUND_READY);
         assertThat(captured.roundNo()).isEqualTo(2);
         assertThat(captured.timeLimitSeconds()).isEqualTo(30);
 
@@ -352,7 +355,7 @@ class GameRoundProgressIntegrationTest {
         assertThat(redisTemplate.opsForSet().isMember(correctPlayersKey, USER_ID_1)).isFalse();
 
         ArgumentCaptor<ChatMessageDto> chatCaptor = ArgumentCaptor.forClass(ChatMessageDto.class);
-        verify(messagingTemplate, times(1)).convertAndSend(eq("/topic/game/" + LOBBY_CODE + "/chat"), chatCaptor.capture());
+        verify(messagingTemplate, times(1)).convertAndSend(eq(StompDestinations.subscribeGameChat(LOBBY_CODE)), chatCaptor.capture());
         
         ChatMessageDto capturedChat = chatCaptor.getValue();
         assertThat(capturedChat.getContent()).isEqualTo("***");
