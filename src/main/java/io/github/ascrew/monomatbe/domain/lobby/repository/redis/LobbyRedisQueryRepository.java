@@ -153,6 +153,7 @@ public class LobbyRedisQueryRepository {
      * [조회 전략]
      * - lobby:{code}:order List를 우선 사용하여 FE 표시 순서를 안정적으로 유지한다.
      * - participants Set을 함께 조회하여 이미 퇴장했지만 order에 남은 값은 제거한다.
+     * - order List에 동일 userIdentifier가 중복으로 남아 있어도 응답에서는 한 번만 반환한다.
      * - order List에는 없지만 participants Set에는 존재하는 비정상 데이터는 응답 누락 방지를 위해 뒤에 보정한다.
      *
      * @param code 로비 초대 코드
@@ -173,11 +174,15 @@ public class LobbyRedisQueryRepository {
             return new ArrayList<>(participantSet);
         }
 
-        List<String> result = new ArrayList<>();
+        Set<String> orderedUniqueParticipants = new LinkedHashSet<>();
 
         for (String userIdentifier : orderedParticipants) {
+            if (userIdentifier == null || userIdentifier.isBlank()) {
+                continue;
+            }
+
             if (participantSet.contains(userIdentifier)) {
-                result.add(userIdentifier);
+                orderedUniqueParticipants.add(userIdentifier);
             }
         }
 
@@ -186,12 +191,14 @@ public class LobbyRedisQueryRepository {
          * participants Set에만 존재하는 사용자를 뒤에 추가한다.
          */
         for (String userIdentifier : participantSet) {
-            if (!result.contains(userIdentifier)) {
-                result.add(userIdentifier);
+            if (userIdentifier == null || userIdentifier.isBlank()) {
+                continue;
             }
+
+            orderedUniqueParticipants.add(userIdentifier);
         }
 
-        return result;
+        return new ArrayList<>(orderedUniqueParticipants);
     }
 
     /**
@@ -310,6 +317,46 @@ public class LobbyRedisQueryRepository {
         return candidates.stream()
                 .limit(limit)
                 .toList();
+    }
+
+    /**
+     * 빈 로비 reaper용으로 lobby:all Set에서 임의의 로비 코드 후보를 조회한다.
+     *
+     * [사용 목적]
+     * reaper 스케줄러가 공개·비공개를 포함한 전체 로비를 제한된 개수만큼 검사하기 위해 사용한다.
+     *
+     * [SRANDMEMBER(distinctRandomMembers) 사용 이유]
+     * SSCAN을 매 실행마다 cursor 0부터 새로 시작하면 항상 앞쪽 구간만 보게 되어
+     * 뒤쪽 stale 로비가 정리되지 않고 누적될 수 있다(cursor를 영속하지 않으면 재개 불가).
+     * reaper는 정렬이 불필요하고, 유령 로비는 폭파될 때까지 후보 풀에 남으므로
+     * 매 실행 임의 표본을 뽑으면 확률적으로 전체가 수렴 정리된다.
+     * 동일 API를 {@link #addPublicSetCleanupCandidates}에서도 사용한다.
+     *
+     * @param limit 조회할 최대 code 수
+     * @return reaper 검사 후보 로비 코드 목록
+     */
+    public List<String> getAllLobbyCodesForReaping(int limit) {
+        if (limit <= 0) {
+            return List.of();
+        }
+
+        Set<String> codes = redisTemplate.opsForSet()
+                .distinctRandomMembers(RedisKeys.LOBBY_ALL, limit);
+
+        if (codes == null || codes.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> candidates = new ArrayList<>(codes.size());
+
+        for (String code : codes) {
+            if (code == null || code.isBlank()) {
+                continue;
+            }
+            candidates.add(code);
+        }
+
+        return candidates;
     }
 
     /**

@@ -45,6 +45,9 @@ public final class RedisKeys {
     /** 로비별 최근 채팅 메시지 List 키 접미사 */
     private static final String RECENT_CHAT_MESSAGES_SUFFIX = ":chats:recent";
 
+    /** 로비별 맵 플레이 횟수 집계 완료 키 접미사 */
+    private static final String MAP_PLAY_COUNTED_SUFFIX = ":map-play-counted";
+
     /** 채팅 발신자 프로필 캐시 키 접두사 */
     private static final String CHAT_SENDER_PROFILE_PREFIX = "chat:sender-profile:";
 
@@ -125,6 +128,25 @@ public final class RedisKeys {
 
     /** 공개 로비 코드 목록을 담는 전역 Set 키 */
     public static final String LOBBY_PUBLIC = "lobby:public";
+
+    /**
+     * 공개·비공개를 포함한 전체 로비 코드 목록을 담는 전역 Set 키.
+     *
+     * [사용 목적]
+     * lobby:public은 공개 로비만 담으므로, 비정상 종료로 유령 참여자만 남거나
+     * 생성 직후 아무도 구독하지 않은 빈 로비(공개/비공개 모두)를 주기적으로 찾아
+     * 폭파(reaper)하려면 전체 로비를 열거할 수 있어야 한다.
+     *
+     * [생명주기]
+     * - create_lobby.lua : 로비 생성 시 SADD (공개/비공개 무관)
+     * - leave_lobby.lua / reap_lobby.lua : 로비 폭파 시 SREM
+     * - deleteFromRedis : 보상/롤백 삭제 시 SREM
+     *
+     * [정합성]
+     * reap_lobby.lua는 Hash가 없는 stale 엔트리를 만나면 스스로 SREM 하므로,
+     * 일부 SREM이 누락돼도 인덱스는 점진적으로 정합화된다.
+     */
+    public static final String LOBBY_ALL = "lobby:all";
 
     /**
      * 공개 로비 최신순 정렬 인덱스 ZSET 키
@@ -344,6 +366,30 @@ public final class RedisKeys {
     }
 
     /**
+     * 로비별 맵 플레이 횟수 집계 완료 키를 반환한다.
+     *
+     * 저장 구조:
+     * - Key   : lobby:{code}:map-play-counted
+     * - Type  : String
+     * - Value : mapId
+     * - TTL   : GameSessionProperties.redisTtl 설정값과 동일하게 유지한다.
+     *
+     * [사용 목적]
+     * 동일 로비에서 중복 시작 요청, 재시도, WebSocket 재연결 등으로
+     * 같은 맵의 playCount가 중복 증가하지 않도록 SETNX 기준 키로 사용한다.
+     *
+     * [주의]
+     * 이 키의 TTL은 게임 세션 Redis 키 TTL과 동일해야 한다.
+     * TTL 정책은 {@code monomat.game.session.redis-ttl} 설정을 기준으로 관리한다.
+     *
+     * @param code 로비 초대 코드
+     * @return 로비별 맵 플레이 횟수 집계 완료 Redis key
+     */
+    public static String lobbyMapPlayCountedKey(String code) {
+        return LOBBY_PREFIX + code + MAP_PLAY_COUNTED_SUFFIX;
+    }
+
+    /**
      * 로비 채팅 메시지 신고 중복 방지 lock key를 반환한다.
      *
      * 저장 구조:
@@ -545,6 +591,20 @@ public final class RedisKeys {
     }
 
     /**
+     * WebSocket 세션 매핑 Hash 키의 prefix를 반환합니다.
+     *
+     * [사용 목적]
+     * reap_lobby.lua가 참여자별 ws:connection:{wsSessionId} 키를 스크립트 내부에서
+     * 동적으로 구성해 해당 세션이 실제로 이 로비에 매핑돼 있는지 검증하므로,
+     * prefix를 ARGV로 전달하기 위해 사용합니다.
+     *
+     * @return "ws:connection:"
+     */
+    public static String wsConnectionKeyPrefix() {
+        return WS_CONNECTION_PREFIX;
+    }
+
+    /**
      * 게스트 세션 정보를 저장하는 Redis Hash 키를 반환합니다.
      *
      * @param guestToken 게스트 UUID 토큰
@@ -616,6 +676,21 @@ public final class RedisKeys {
      */
     public static String lobbyUserSessionKey(String code, String userIdentifier) {
         return LOBBY_PREFIX + code + USER_SESSION_SUFFIX + userIdentifier;
+    }
+
+    /**
+     * 로비 내 사용자별 현재 유효 WebSocket 세션 키의 prefix를 반환합니다.
+     *
+     * [사용 목적]
+     * reap_lobby.lua가 참여자별 lobby:{code}:user_session:{userIdentifier} 키를
+     * 스크립트 내부에서 동적으로 구성해, 전역 온라인 여부가 아니라
+     * "이 로비에 대해 아직 유효한 세션이 있는가"를 판정하기 위해 prefix를 ARGV로 전달합니다.
+     *
+     * @param code 로비 초대 코드
+     * @return "lobby:{code}:user_session:"
+     */
+    public static String lobbyUserSessionKeyPrefix(String code) {
+        return LOBBY_PREFIX + code + USER_SESSION_SUFFIX;
     }
 
     /**
@@ -938,5 +1013,25 @@ public final class RedisKeys {
      */
     public static String gameSessionNextRoundLockKey(String lobbyCode, int roundNo) {
         return gameSessionBase(lobbyCode) + ":round:" + roundNo + ":next_lock";
+    }
+
+    /**
+     * 로비 내 인게임 연결 끊김 사용자의 재접속 유예 고유 토큰 키를 반환합니다.
+     *
+     * @param code 로비 초대 코드
+     * @param userIdentifier 사용자 식별자
+     * @return "lobby:{code}:disconnect_token:{userIdentifier}"
+     */
+    public static String lobbyUserDisconnectTokenKey(String code, String userIdentifier) {
+        return LOBBY_PREFIX + code + ":disconnect_token:" + userIdentifier;
+    }
+
+    /**
+     * 로비 내 인게임 연결 끊김 사용자의 재접속 유예 대기 ZSET 키를 반환합니다.
+     *
+     * @return "game:disconnect:pending"
+     */
+    public static String gameDisconnectPendingZsetKey() {
+        return "game:disconnect:pending";
     }
 }
