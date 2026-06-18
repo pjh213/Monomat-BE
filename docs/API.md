@@ -264,7 +264,7 @@ HTTP/1.1 200 OK
       "description": "인기 K-POP 문제 모음",
       "category": "K-POP",
       "numOfSong": 10,
-      "totalPlayTime": 300,
+      "totalPlayTime": 0,
       "isPublic": true,
       "pendingPublic": false,
       "ownerId": 10,
@@ -289,7 +289,7 @@ HTTP/1.1 200 OK
 | `description` | string \| null | 맵 설명 |
 | `category` | string | 맵 카테고리 |
 | `numOfSong` | number | 맵에 등록된 곡/문제 수 |
-| `totalPlayTime` | number | 맵 전체 재생 시간(초). 플레이 횟수가 아님 |
+| `totalPlayTime` | number | (사용 중단) 항상 0. 재생 시간은 로비의 `timeLimitSeconds`로 결정됨 |
 | `isPublic` | boolean | 공개 여부 |
 | `pendingPublic` | boolean | 공개 의도 보존 여부 |
 | `ownerId` | number | 맵 소유자 ID |
@@ -356,7 +356,7 @@ AND category 조건
       "description": "내가 만든 OST 퀴즈",
       "category": "OST",
       "numOfSong": 10,
-      "totalPlayTime": 300,
+      "totalPlayTime": 0,
       "isPublic": false,
       "pendingPublic": true,
       "ownerId": 10,
@@ -407,7 +407,7 @@ HTTP/1.1 200 OK
   "description": "J-POP 중심 퀴즈 맵",
   "category": "J-POP",
   "numOfSong": 10,
-  "totalPlayTime": 300,
+  "totalPlayTime": 0,
   "isPublic": false,
   "pendingPublic": false,
   "playCount": 0,
@@ -427,7 +427,7 @@ HTTP/1.1 200 OK
 | `description` | string \| null | 맵 설명 |
 | `category` | string | 맵 카테고리 |
 | `numOfSong` | number | 맵에 등록된 곡/문제 수 |
-| `totalPlayTime` | number | 맵 전체 재생 시간 |
+| `totalPlayTime` | number | (사용 중단) 항상 0. 재생 시간은 로비의 `timeLimitSeconds`로 결정됨 |
 | `isPublic` | boolean | 공개 여부 |
 | `pendingPublic` | boolean | 공개 의도 보존 여부 |
 | `playCount` | number | 맵이 실제 게임 시작에 사용된 누적 횟수 |
@@ -475,7 +475,6 @@ Content-Type: application/json
       "orderNum": 1,
       "youtubeUrl": "https://www.youtube.com/watch?v=example",
       "startTime": 30,
-      "endTime": 60,
       "answers": ["ditto"],
       "hint": "ㄷㅌ",
       "hintTime": 15
@@ -485,7 +484,6 @@ Content-Type: application/json
       "orderNum": 2,
       "youtubeUrl": "https://www.youtube.com/watch?v=example2",
       "startTime": 0,
-      "endTime": 30,
       "answers": ["omg"],
       "hint": "ㅇㅇㅈ",
       "hintTime": 15
@@ -507,7 +505,7 @@ Content-Type: application/json
     "description": "J-POP 중심 퀴즈 맵",
     "category": "J-POP",
     "numOfSong": 2,
-    "totalPlayTime": 60,
+    "totalPlayTime": 0,
     "isPublic": false,
     "pendingPublic": false,
     "playCount": 0,
@@ -522,7 +520,6 @@ Content-Type: application/json
       "youtubeUrl": "https://www.youtube.com/watch?v=example",
       "videoId": "example",
       "startTime": 30,
-      "endTime": 60,
       "title": "YouTube title",
       "artist": "YouTube author",
       "thumbnailUrl": "https://...",
@@ -575,7 +572,7 @@ Content-Type: application/json
   "questionCount": 10,
   "timeLimitSeconds": 30
 }
-````
+```
 
 | 필드                 | 타입     | 필수 | 제한     | 설명           |
 | ------------------ | ------ | -- | ------ | ------------ |
@@ -669,7 +666,7 @@ HTTP/1.1 200 OK
   "description": "인기 K-POP 문제 모음",
   "category": "K-POP",
   "numOfSong": 10,
-  "totalPlayTime": 300,
+  "totalPlayTime": 0,
   "isPublic": true,
   "pendingPublic": false,
   "playCount": 42,
@@ -689,7 +686,7 @@ HTTP/1.1 200 OK
 | `description` | string \| null | 맵 설명 |
 | `category` | string | 맵 카테고리 |
 | `numOfSong` | number | 맵에 등록된 곡/문제 수 |
-| `totalPlayTime` | number | 맵 전체 재생 시간(초). 플레이 횟수가 아님 |
+| `totalPlayTime` | number | (사용 중단) 항상 0. 재생 시간은 로비의 `timeLimitSeconds`로 결정됨 |
 | `isPublic` | boolean | 공개 여부 |
 | `pendingPublic` | boolean | 공개 의도 보존 여부 |
 | `playCount` | number | 맵이 실제 게임 시작에 사용된 누적 횟수 |
@@ -727,7 +724,6 @@ HTTP/1.1 200 OK
       "orderNum": 1,
       "youtubeUrl": "https://www.youtube.com/watch?v=video1",
       "startTime": 30,
-      "endTime": 60,
       "answers": ["ditto"],
       "hint": "ㄷㅌ",
       "hintTime": 15
@@ -736,7 +732,6 @@ HTTP/1.1 200 OK
       "orderNum": 2,
       "youtubeUrl": "https://www.youtube.com/watch?v=video2",
       "startTime": 0,
-      "endTime": 30,
       "answers": ["omg"],
       "hint": "ㅇㅇㅈ",
       "hintTime": 15
@@ -757,7 +752,6 @@ HTTP/1.1 200 OK
 | `items[].orderNum`   |   number |  O | 문제 순서. 1부터 items 개수까지 중복 없이 지정 |
 | `items[].youtubeUrl` |   string |  O | YouTube URL                    |
 | `items[].startTime`  |   number |  O | 재생 시작 시간, 초 단위                 |
-| `items[].endTime`    |   number |  O | 재생 종료 시간, 초 단위                 |
 | `items[].answers`    | string[] |  O | 정답 목록                          |
 | `items[].hint`       |   string |  O | 힌트                             |
 | `items[].hintTime`   |   number |  X | 힌트 공개 시간. null이면 기본값 15초 적용    |
@@ -774,7 +768,7 @@ HTTP/1.1 200 OK
     "description": "J-POP 중심 퀴즈 맵",
     "category": "J-POP",
     "numOfSong": 2,
-    "totalPlayTime": 60,
+    "totalPlayTime": 0,
     "isPublic": false,
     "pendingPublic": false,
     "playCount": 0,
@@ -789,7 +783,6 @@ HTTP/1.1 200 OK
       "youtubeUrl": "https://www.youtube.com/watch?v=video1",
       "videoId": "video1",
       "startTime": 30,
-      "endTime": 60,
       "title": "YouTube title 1",
       "artist": "YouTube author 1",
       "thumbnailUrl": "https://thumbnail/1",
@@ -807,7 +800,7 @@ HTTP/1.1 200 OK
 
 |                       상태 코드 | 상황                                                 |
 | --------------------------: | -------------------------------------------------- |
-|           `400 Bad Request` | 요청 값 검증 실패, 중복 orderNum, orderNum 순서 불연속, 재생 구간 오류 |
+|           `400 Bad Request` | 요청 값 검증 실패, 중복 orderNum, orderNum 순서 불연속 |
 |          `401 Unauthorized` | 미인증                                                |
 |             `403 Forbidden` | 게스트 또는 정식 회원이 아닌 사용자                               |
 |              `409 Conflict` | 맵 최대 문제 수 초과, DB 저장 충돌                             |
@@ -818,7 +811,7 @@ HTTP/1.1 200 OK
 * 맵 기본 정보와 문제 목록은 하나의 트랜잭션으로 저장됩니다.
 * 아이템 중 하나라도 검증 또는 저장에 실패하면 `map`, `map_item` 모두 rollback됩니다.
 * YouTube URL/oEmbed 검증 정책은 기존 문제 생성 API와 동일합니다.
-* 생성 완료 후 `numOfSong`, `totalPlayTime`이 생성된 items 기준으로 반영됩니다.
+* 생성 완료 후 `numOfSong`이 생성된 items 기준으로 반영됩니다. (`totalPlayTime`은 사용 중단되어 항상 0)
 
 ---
 
@@ -836,6 +829,8 @@ Content-Type: application/json
 
 `maxPlayers`, `questionCount`, `timeLimitSeconds`는 생략할 수 있으며, 생략 시 서버 기본값이 적용됩니다.
 
+단, `mapId`가 있고 `questionCount`가 생략된 경우에는 고정 기본값이 아니라 선택된 맵의 등록 곡 수(`map.numOfSong`)를 기본 라운드 수로 사용합니다.
+
 #### Request Body
 
 ```json
@@ -849,27 +844,32 @@ Content-Type: application/json
 }
 ```
 
-| 필드 | 타입 | 필수 | 기본값 | 제한 | 설명 |
-| --- | --- | ---: | ---: | --- | --- |
-| `title` | string | O | - | 최대 255자, blank 불가 | 로비 제목 |
-| `maxPlayers` | number | X | 4 | 2~8 | 최대 참여 인원 |
-| `isPrivate` | boolean | O | - | - | 비공개 로비 여부 |
-| `mapId` | number | X | null | 양수 | 연결할 맵 ID. 생략 시 맵 미선택 로비 생성 |
-| `questionCount` | number | X | 10 | 1~50 | 진행할 문제 수/라운드 수 |
-| `timeLimitSeconds` | number | X | 30 | 10~120 | 라운드당 제한 시간(초) |
+| 필드                 | 타입      | 필수 |                                기본값 | 제한                              | 설명                         |
+| ------------------ | ------- | -: | ---------------------------------: | ------------------------------- | -------------------------- |
+| `title`            | string  |  O |                                  - | 최대 255자, blank 불가               | 로비 제목                      |
+| `maxPlayers`       | number  |  X |                                  4 | 2~8                             | 최대 참여 인원                   |
+| `isPrivate`        | boolean |  O |                                  - | -                               | 비공개 로비 여부                  |
+| `mapId`            | number  |  X |                               null | 양수                              | 연결할 맵 ID. 생략 시 맵 미선택 로비 생성 |
+| `questionCount`    | number  |  X | 맵 선택 시 `map.numOfSong`, 맵 미선택 시 10 | 1~50, 맵 선택 시 `map.numOfSong` 이하 | 진행할 문제 수/라운드 수             |
+| `timeLimitSeconds` | number  |  X |                                 30 | 10~120                          | 라운드당 제한 시간(초)              |
 
 #### 로비 생성 기본값/제한 정책
 
-| 항목 | 최소값 | 기본값 | 최대값 |
-| --- | ---: | ---: | ---: |
-| 최대 인원 | 2명 | 4명 | 8명 |
-| 문제 수/라운드 수 | 1개 | 10개 | 50개 |
-| 라운드당 제한 시간 | 10초 | 30초 | 120초 |
+| 항목         | 최소값 |                                 기본값 |  최대값 |
+| ---------- | --: | ----------------------------------: | ---: |
+| 최대 인원      |  2명 |                                  4명 |   8명 |
+| 문제 수/라운드 수 |  1개 | 맵 선택 시 `map.numOfSong`, 맵 미선택 시 10개 |  50개 |
+| 라운드당 제한 시간 | 10초 |                                 30초 | 120초 |
 
 #### 맵 선택 시 문제 수 정책
 
-questionCount 생략 + mapId 있음 → min(10, map.numOfSong)
-questionCount 명시 + mapId 있음 + questionCount > map.numOfSong → 400
+| 조건                                                                 | 처리                                |
+| ------------------------------------------------------------------ | --------------------------------- |
+| `questionCount` 생략 + `mapId` 없음                                    | 기본값 10 사용                         |
+| `questionCount` 생략 + `mapId` 있음                                    | 선택된 맵의 등록 곡 수(`map.numOfSong`) 사용 |
+| `questionCount` 명시 + `mapId` 있음 + `questionCount <= map.numOfSong` | 요청한 `questionCount` 사용            |
+| `questionCount` 명시 + `mapId` 있음 + `questionCount > map.numOfSong`  | `400 Bad Request`                 |
+| `mapId` 있음 + 선택된 맵의 등록 곡 수가 1개 미만                                  | `409 Conflict`                    |
 
 #### Success Response
 
@@ -896,24 +896,25 @@ HTTP/1.1 201 Created
 맵 생성/수정 요청 및 로비 목록 `mapCategory` 필터에서 사용하는 카테고리 값은 아래 5종이다.
 
 | 응답/표시 값 | 허용 입력 값(대소문자·하이픈·언더스코어·공백 무시) |
-| --- | --- |
-| `K-POP` | `K-POP`, `KPOP`, `kpop` |
-| `J-POP` | `J-POP`, `JPOP`, `jpop` |
-| `POP` | `POP`, `pop` |
-| `OST` | `OST`, `ost` |
-| `애니` | `애니`, `ANIME`, `anime` |
+| ------- | ----------------------------- |
+| `K-POP` | `K-POP`, `KPOP`, `kpop`       |
+| `J-POP` | `J-POP`, `JPOP`, `jpop`       |
+| `POP`   | `POP`, `pop`                  |
+| `OST`   | `OST`, `ost`                  |
+| `애니`    | `애니`, `ANIME`, `anime`        |
 
 목록에 없는 값을 요청하면 400 Bad Request로 응답한다.
 
 #### Error Response
 
-| HTTP Status | 상황 |
-| ---: | --- |
-| 400 | 요청 본문 검증 실패 |
-| 400 | 선택한 맵의 등록 곡 수보다 `questionCount`가 큼 |
-| 401 | 인증 정보 없음 또는 유효하지 않은 Access Token |
-| 404 | 사용자 또는 선택한 맵을 찾을 수 없음 |
-| 500 | Redis 저장 후 DB 스냅샷 저장 실패 등 로비 생성 실패 |
+| HTTP Status | 상황                                  |
+| ----------: | ----------------------------------- |
+|         400 | 요청 본문 검증 실패                         |
+|         400 | 선택한 맵의 등록 곡 수보다 `questionCount`가 큼  |
+|         401 | 인증 정보 없음 또는 유효하지 않은 Access Token    |
+|         404 | 사용자 또는 선택한 맵을 찾을 수 없음               |
+|         409 | 삭제된 맵, 등록된 곡이 없는 맵 등 로비에 연결할 수 없는 맵 |
+|         500 | Redis 저장 후 DB 스냅샷 저장 실패 등 로비 생성 실패  |
 
 ### 로비 상세 조회
 
@@ -922,20 +923,22 @@ GET /api/lobbies/{inviteCode}
 Authorization: Bearer {accessToken}
 ```
 
-로비 대기실 화면에 필요한 로비 기본 정보, 선택된 맵 정보, 룰 정보, 참가자 목록, 시작 가능 여부를 조회합니다.
+로비 대기실 화면에 필요한 로비 기본 정보, 선택된 맵 정보, 선택된 맵의 등록 곡 수, 룰 정보, 참가자 목록, 시작 가능 여부를 조회합니다.
 
 참가자 목록은 Redis에 저장된 로비 참여자 상태를 기준으로 구성하며, 각 참가자의 `userIdentifier`에 대응하는 사용자 닉네임을 함께 반환합니다.
 
+`mapNumOfSong`은 FE에서 라운드 수 입력 범위를 `1 ~ mapNumOfSong`으로 제한하기 위한 값입니다. 맵이 선택되지 않은 로비에서는 `null`을 반환합니다.
+
 #### WebSocket 연동 정책
 
-로비 참가, 퇴장, 준비 상태 변경 등으로 로비 상태가 변경되면 서버는 기존 WebSocket refresh 이벤트를 전송합니다.
+로비 참가, 퇴장, 준비 상태 변경, 맵 변경, 로비 설정 변경 등으로 로비 상태가 변경되면 서버는 기존 WebSocket refresh 이벤트를 전송합니다.
 
 FE는 refresh 이벤트를 수신하면 이 API를 다시 호출하여 최신 로비 상세 정보를 동기화합니다.
 
 ```text
 WebSocket refresh 이벤트 수신
 → GET /api/lobbies/{inviteCode} 재조회
-→ 최신 players[].nickname / ready / host 상태 반영
+→ 최신 mapNumOfSong / questionCount / players[].nickname / ready / host 상태 반영
 ```
 
 #### Path Variables
@@ -962,7 +965,8 @@ HTTP/1.1 200 OK
   "mapId": 1,
   "mapTitle": "K-POP 퀴즈",
   "mapCategory": "K-POP",
-  "questionCount": 10,
+  "mapNumOfSong": 24,
+  "questionCount": 24,
   "timeLimitSeconds": 30,
   "players": [
     {
@@ -993,11 +997,12 @@ HTTP/1.1 200 OK
 | `maxPlayers`               | number        | 최대 참여 인원                                          |
 | `currentPlayers`           | number        | 현재 참여 인원                                          |
 | `status`                   | string        | 로비 상태. `WAITING`, `PLAYING`, `FINISHED`           |
-| `mapId`                    | number \| null | 선택된 맵 ID. 맵 미선택 시 `null` |
-| `mapTitle`                 | string \| null | 선택된 맵 제목. 맵 미선택 시 `null` |
-| `mapCategory`              | string \| null | 선택된 맵 카테고리. 맵 미선택 시 `null` |
-| `questionCount`            | number \| null | 진행할 문제 수/라운드 수 |
-| `timeLimitSeconds`         | number \| null | 라운드당 제한 시간(초) |
+| `mapId`                    | number | null | 선택된 맵 ID. 맵 미선택 시 `null`                          |
+| `mapTitle`                 | string | null | 선택된 맵 제목. 맵 미선택 시 `null`                          |
+| `mapCategory`              | string | null | 선택된 맵 카테고리. 맵 미선택 시 `null`                        |
+| `mapNumOfSong`             | number | null | 선택된 맵의 등록 곡/문제 수. 맵 미선택 시 `null`                  |
+| `questionCount`            | number | null | 진행할 문제 수/라운드 수                                    |
+| `timeLimitSeconds`         | number | null | 라운드당 제한 시간(초)                                     |
 | `players`                  | array         | 로비 참가자 목록                                         |
 | `players[].userIdentifier` | string        | 참가자 식별자. Redis/WebSocket 식별용 값이며 화면 표시용으로 사용하지 않음 |
 | `players[].nickname`       | string        | 참가자 표시 닉네임                                        |
@@ -1024,6 +1029,8 @@ HTTP/1.1 200 OK
 |         401 | 인증 정보 없음 또는 유효하지 않은 Access Token |
 |         403 | 로비 참여자가 아닌 사용자가 상세 조회를 시도함       |
 |         404 | 존재하지 않는 로비 초대 코드                 |
+
+---
 
 ### 초대 코드 기반 로비 입장
 
